@@ -11,7 +11,6 @@ ProxiTap is the ultimate, decentralized local network walkie-talkie for Android.
 - **Persistent WebRTC Audio:** Ultra low-latency, persistent bidirectional audio streaming.
 - **Seamless Auto-Reconnect:** Drop out of range? The app enters a silent polling state and instantly rejoins the lobby the moment you ride back into range. No buttons required.
 - **Hardware Push-To-Talk (PTT):** Leave your phone in your pocket. ProxiTap intercepts your Bluetooth earbud's play/pause media button to toggle your microphone instantly.
-- **RNNoise AI Wind Suppression:** An experimental C++ NDK integration of the Xiph.org RNNoise deep learning model, bypassing standard hardware cancellation constraints to eliminate extreme wind noise.
 - **Wi-Fi RTT Radar:** Automatically ping and calculate the exact physical distance (in meters) to your peers using Wi-Fi Round Trip Time ranging (hardware permitting).
 - **Advanced Lobby Controls:** Hosts can secure lobbies with PINs, tweak audio bitrates, force network modes, and instantly share Deep Links.
 - **Android App Links:** Generate a dynamic QR code or shareable Deep Link. If your friend has the app, it instantly drops them into your lobby. If they don't, it routes them to a fallback website to download the APK.
@@ -28,7 +27,6 @@ ProxiTap is licensed under the **GNU General Public License v3 (GPLv3)**.
 
 It leverages the following open-source technologies:
 - **WebRTC** (BSD 3-Clause)
-- **RNNoise** (BSD 3-Clause)
 - **Jetpack Compose & Kotlin/Ktor** (Apache 2.0)
 
 *(All dependencies are fully permissive and strictly compatible with the GPLv3 license).*

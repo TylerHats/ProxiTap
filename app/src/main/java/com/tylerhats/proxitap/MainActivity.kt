@@ -73,7 +73,7 @@ fun ProxiTapApp() {
     NavHost(navController = navController, startDestination = "home") {
         composable("home") {
             HomeScreen(
-                onHostClick = { name, pin, useHotspot, forceRnnoise, enableRadar -> 
+                onHostClick = { name, pin, useHotspot, enableRadar -> 
                     isHost = true
                     navController.navigate("lobby?name=$name&pin=${pin ?: ""}&hotspot=$useHotspot&radar=$enableRadar") 
                 },

@@ -23,7 +23,7 @@ class WebRtcClient(private val context: Context) {
     var isNoiseSuppressionEnabled: Boolean = true
     var isAcousticEchoCancellationEnabled: Boolean = true
 
-    init {
+    fun initWebRtcAndTracks() {
         initWebRtc()
         createLocalAudioTrack()
     }

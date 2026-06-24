@@ -9,14 +9,13 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 fun HomeScreen(
-    onHostClick: (String, String?, Boolean, Boolean, Boolean) -> Unit,
+    onHostClick: (String, String?, Boolean, Boolean) -> Unit,
     onJoinClick: () -> Unit,
     onSearchAreaClick: () -> Unit
 ) {
     var lobbyName by remember { mutableStateOf("") }
     var pin by remember { mutableStateOf("") }
     var useHotspot by remember { mutableStateOf(false) }
-    var forceRnnoise by remember { mutableStateOf(true) }
     var enableRadar by remember { mutableStateOf(false) }
 
     Column(
@@ -98,25 +97,13 @@ fun HomeScreen(
                 )
             }
         }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text("Force AI Noise Suppression", style = MaterialTheme.typography.bodyLarge)
-            Switch(
-                checked = forceRnnoise,
-                onCheckedChange = { forceRnnoise = it }
-            )
-        }
         
         Spacer(modifier = Modifier.height(32.dp))
         
         Button(
             onClick = { 
                 val finalName = lobbyName.takeIf { it.isNotBlank() } ?: "ProxiTap_Lobby_${(100..999).random()}"
-                onHostClick(finalName, pin.takeIf { it.isNotBlank() }, useHotspot, forceRnnoise, enableRadar) 
+                onHostClick(finalName, pin.takeIf { it.isNotBlank() }, useHotspot, enableRadar) 
             },
             modifier = Modifier.fillMaxWidth().height(56.dp)
         ) {

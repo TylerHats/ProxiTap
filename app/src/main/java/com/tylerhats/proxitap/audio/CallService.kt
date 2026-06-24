@@ -56,7 +56,17 @@ class CallService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        webRtcClient = WebRtcClient(this)
+        
+        val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
+        val nsEnabled = prefs.getBoolean("ns_enabled", true)
+        val aecEnabled = prefs.getBoolean("aec_enabled", true)
+        val pttEnabled = prefs.getBoolean("hardware_ptt", true)
+
+        webRtcClient = WebRtcClient(this).apply {
+            isNoiseSuppressionEnabled = nsEnabled
+            isAcousticEchoCancellationEnabled = aecEnabled
+            initWebRtcAndTracks()
+        }
         
         webRtcClient.startAudioLevelMonitoring { speaking ->
             _isSpeaking.value = speaking
@@ -66,7 +76,7 @@ class CallService : Service() {
             _isMuted.value = muted
             webRtcClient.setMute(muted)
         }
-        hardwarePttManager?.isHardwarePttEnabled = true
+        hardwarePttManager?.isHardwarePttEnabled = pttEnabled
         hardwarePttManager?.start()
     }
 

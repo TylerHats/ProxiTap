@@ -7,14 +7,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
+import androidx.compose.ui.platform.LocalContext
+
 @Composable
 fun SettingsScreen(
     onBackClick: () -> Unit
 ) {
-    var nsEnabled by remember { mutableStateOf(true) }
-    var aecEnabled by remember { mutableStateOf(true) }
-    var bluetoothMic by remember { mutableStateOf(true) }
-    var networkMode by remember { mutableStateOf("NAN") } // "NAN" or "HOTSPOT"
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("ProxiTapSettings", android.content.Context.MODE_PRIVATE) }
+    
+    var nsEnabled by remember { mutableStateOf(prefs.getBoolean("ns_enabled", true)) }
+    var aecEnabled by remember { mutableStateOf(prefs.getBoolean("aec_enabled", true)) }
+    var bluetoothMic by remember { mutableStateOf(prefs.getBoolean("bluetooth_mic", true)) }
+    var hardwarePtt by remember { mutableStateOf(prefs.getBoolean("hardware_ptt", true)) }
 
     Column(
         modifier = Modifier.fillMaxSize().systemBarsPadding().padding(16.dp)
@@ -28,7 +33,10 @@ fun SettingsScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("Noise Suppression (NS)")
-            Switch(checked = nsEnabled, onCheckedChange = { nsEnabled = it })
+            Switch(checked = nsEnabled, onCheckedChange = { 
+                nsEnabled = it
+                prefs.edit().putBoolean("ns_enabled", it).apply()
+            })
         }
         
         Row(
@@ -37,7 +45,10 @@ fun SettingsScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("Acoustic Echo Cancellation (AEC)")
-            Switch(checked = aecEnabled, onCheckedChange = { aecEnabled = it })
+            Switch(checked = aecEnabled, onCheckedChange = { 
+                aecEnabled = it
+                prefs.edit().putBoolean("aec_enabled", it).apply()
+            })
         }
         
         Row(
@@ -53,25 +64,10 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Switch(checked = bluetoothMic, onCheckedChange = { bluetoothMic = it })
-        }
-
-        Spacer(modifier = Modifier.height(32.dp))
-        Text("Network Mode", style = MaterialTheme.typography.titleMedium)
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceAround
-        ) {
-            FilterChip(
-                selected = networkMode == "NAN",
-                onClick = { networkMode = "NAN" },
-                label = { Text("Wi-Fi Aware (NAN)") }
-            )
-            FilterChip(
-                selected = networkMode == "HOTSPOT",
-                onClick = { networkMode = "HOTSPOT" },
-                label = { Text("Local Hotspot") }
-            )
+            Switch(checked = bluetoothMic, onCheckedChange = { 
+                bluetoothMic = it
+                prefs.edit().putBoolean("bluetooth_mic", it).apply()
+            })
         }
 
         Spacer(modifier = Modifier.height(32.dp))
@@ -91,24 +87,10 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Switch(checked = hardwarePtt, onCheckedChange = { hardwarePtt = it })
-        }
-        
-        var rnnoise by remember { mutableStateOf(false) }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column {
-                Text("RNNoise AI Cancellation")
-                Text(
-                    text = "Bypass hardware constraints for deep-learning noise removal",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(checked = rnnoise, onCheckedChange = { rnnoise = it })
+            Switch(checked = hardwarePtt, onCheckedChange = { 
+                hardwarePtt = it
+                prefs.edit().putBoolean("hardware_ptt", it).apply()
+            })
         }
         
         Spacer(modifier = Modifier.weight(1f))
