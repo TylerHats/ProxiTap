@@ -17,7 +17,7 @@ fun SettingsScreen(
     var networkMode by remember { mutableStateOf("NAN") } // "NAN" or "HOTSPOT"
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(16.dp)
+        modifier = Modifier.fillMaxSize().systemBarsPadding().padding(16.dp)
     ) {
         Text("Audio Settings", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(24.dp))

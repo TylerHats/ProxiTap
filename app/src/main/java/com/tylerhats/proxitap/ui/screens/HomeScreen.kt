@@ -9,13 +9,18 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 fun HomeScreen(
-    onHostClick: (String?) -> Unit,
-    onJoinClick: () -> Unit
+    onHostClick: (String, String?) -> Unit,
+    onJoinClick: () -> Unit,
+    onSearchAreaClick: () -> Unit
 ) {
+    var lobbyName by remember { mutableStateOf("") }
     var pin by remember { mutableStateOf("") }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .systemBarsPadding()
+            .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
@@ -31,8 +36,18 @@ fun HomeScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         
-        Spacer(modifier = Modifier.height(64.dp))
+        Spacer(modifier = Modifier.height(48.dp))
         
+        OutlinedTextField(
+            value = lobbyName,
+            onValueChange = { lobbyName = it },
+            label = { Text("Lobby Name (Required to Host)") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
         OutlinedTextField(
             value = pin,
             onValueChange = { pin = it },
@@ -47,10 +62,10 @@ fun HomeScreen(
             modifier = Modifier.align(Alignment.Start).padding(start = 16.dp, top = 4.dp)
         )
         
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(32.dp))
         
         Button(
-            onClick = { onHostClick(pin.takeIf { it.isNotBlank() }) },
+            onClick = { onHostClick(lobbyName.takeIf { it.isNotBlank() } ?: "ProxiTap_Lobby_${(100..999).random()}", pin.takeIf { it.isNotBlank() }) },
             modifier = Modifier.fillMaxWidth().height(56.dp)
         ) {
             Text("Host a Lobby", style = MaterialTheme.typography.titleMedium)
@@ -63,6 +78,15 @@ fun HomeScreen(
             modifier = Modifier.fillMaxWidth().height(56.dp)
         ) {
             Text("Join via QR Code", style = MaterialTheme.typography.titleMedium)
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        FilledTonalButton(
+            onClick = onSearchAreaClick,
+            modifier = Modifier.fillMaxWidth().height(56.dp)
+        ) {
+            Text("Search Area (Discover Lobbies)", style = MaterialTheme.typography.titleMedium)
         }
     }
 }
