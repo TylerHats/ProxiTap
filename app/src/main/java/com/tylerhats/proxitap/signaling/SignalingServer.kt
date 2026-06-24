@@ -7,13 +7,22 @@ import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
 import io.ktor.websocket.*
 import kotlinx.coroutines.channels.consumeEach
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import java.time.Duration
 import io.ktor.server.cio.CIO
-import java.util.Collections
+import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
 
 class SignalingServer {
     private var server: ApplicationEngine? = null
-    private val connectedSessions = Collections.synchronizedList(mutableListOf<DefaultWebSocketServerSession>())
+    
+    // peerId to WebSocketSession
+    private val sessions = ConcurrentHashMap<String, DefaultWebSocketServerSession>()
+
+    // For the Host to listen to incoming messages from Peers
+    private val _incomingMessages = MutableSharedFlow<Pair<String, JSONObject>>(extraBufferCapacity = 64)
+    val incomingMessages = _incomingMessages.asSharedFlow()
 
     fun startServer(port: Int = 8080) {
         Log.d("SignalingServer", "Starting Ktor WebSocket server on port $port")
@@ -27,55 +36,52 @@ class SignalingServer {
             routing {
                 webSocket("/signaling") {
                     Log.d("SignalingServer", "New client connected to signaling server")
-                    connectedSessions.add(this)
+                    var currentPeerId: String? = null
                     
                     try {
                         incoming.consumeEach { frame ->
                             if (frame is Frame.Text) {
                                 val message = frame.readText()
                                 Log.d("SignalingServer", "Received message: $message")
+                                val json = JSONObject(message)
+                                val type = json.getString("type")
                                 
-                                // Broadcast to all OTHER connected peers
-                                // In a full implementation, this parses the JSON SDP/ICE and routes it to the specific peer
-                                connectedSessions.filter { it != this }.forEach { session ->
-                                    session.send(Frame.Text(message))
+                                if (type == "JOIN") {
+                                    currentPeerId = json.getString("peerId")
+                                    sessions[currentPeerId!!] = this
+                                }
+                                
+                                if (currentPeerId != null) {
+                                    // Route to Host's WebRTC engine
+                                    _incomingMessages.tryEmit(Pair(currentPeerId!!, json))
+                                    
+                                    // Also route to target peer if this is a mesh message between two peers
+                                    if (json.has("target")) {
+                                        val targetId = json.getString("target")
+                                        sessions[targetId]?.send(Frame.Text(message))
+                                    }
                                 }
                             }
                         }
                     } catch (e: Exception) {
                         Log.e("SignalingServer", "Error in WebSocket connection: ${e.message}")
                     } finally {
-                        Log.d("SignalingServer", "Client disconnected")
-                        connectedSessions.remove(this)
+                        Log.d("SignalingServer", "Client $currentPeerId disconnected")
+                        currentPeerId?.let { sessions.remove(it) }
                     }
                 }
             }
         }.start(wait = false)
     }
 
-    suspend fun sendRemoteConfigCommand(targetPeerId: String, bitrate: Int?, ns: Boolean?, aec: Boolean?) {
-        // Construct JSON command payload
-        val jsonPayload = """
-            {
-                "type": "SET_CONFIG",
-                "target": "$targetPeerId",
-                "bitrate": $bitrate,
-                "ns": $ns,
-                "aec": $aec
-            }
-        """.trimIndent()
-        
-        Log.d("SignalingServer", "Broadcasting config command: $jsonPayload")
-        // Broadcast to all clients (clients will ignore if target doesn't match)
-        connectedSessions.forEach {
-            it.send(Frame.Text(jsonPayload))
-        }
+    suspend fun sendMessageToPeer(targetPeerId: String, json: JSONObject) {
+        sessions[targetPeerId]?.send(Frame.Text(json.toString()))
     }
 
     fun stopServer() {
         Log.d("SignalingServer", "Stopping Ktor WebSocket server")
         server?.stop(1000, 2000)
         server = null
-        connectedSessions.clear()
+        sessions.clear()
     }
 }

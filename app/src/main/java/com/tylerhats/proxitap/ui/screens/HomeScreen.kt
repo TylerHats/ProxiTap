@@ -9,12 +9,14 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 fun HomeScreen(
-    onHostClick: (String, String?) -> Unit,
+    onHostClick: (String, String?, Boolean, Boolean) -> Unit,
     onJoinClick: () -> Unit,
     onSearchAreaClick: () -> Unit
 ) {
     var lobbyName by remember { mutableStateOf("") }
     var pin by remember { mutableStateOf("") }
+    var useHotspot by remember { mutableStateOf(false) }
+    var forceRnnoise by remember { mutableStateOf(true) }
 
     Column(
         modifier = Modifier
@@ -62,10 +64,39 @@ fun HomeScreen(
             modifier = Modifier.align(Alignment.Start).padding(start = 16.dp, top = 4.dp)
         )
         
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text("Use Local Hotspot Mode", style = MaterialTheme.typography.bodyLarge)
+            Switch(
+                checked = useHotspot,
+                onCheckedChange = { useHotspot = it }
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text("Force AI Noise Suppression", style = MaterialTheme.typography.bodyLarge)
+            Switch(
+                checked = forceRnnoise,
+                onCheckedChange = { forceRnnoise = it }
+            )
+        }
+        
         Spacer(modifier = Modifier.height(32.dp))
         
         Button(
-            onClick = { onHostClick(lobbyName.takeIf { it.isNotBlank() } ?: "ProxiTap_Lobby_${(100..999).random()}", pin.takeIf { it.isNotBlank() }) },
+            onClick = { 
+                val finalName = lobbyName.takeIf { it.isNotBlank() } ?: "ProxiTap_Lobby_${(100..999).random()}"
+                onHostClick(finalName, pin.takeIf { it.isNotBlank() }, useHotspot, forceRnnoise) 
+            },
             modifier = Modifier.fillMaxWidth().height(56.dp)
         ) {
             Text("Host a Lobby", style = MaterialTheme.typography.titleMedium)

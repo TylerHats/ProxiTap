@@ -10,6 +10,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import org.json.JSONObject
 
 class SignalingClient(private val hostIp: String, private val port: Int = 8080) {
 
@@ -22,22 +23,29 @@ class SignalingClient(private val hostIp: String, private val port: Int = 8080) 
     private var session: DefaultClientWebSocketSession? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    private val _incomingMessages = MutableSharedFlow<String>()
+    private val _incomingMessages = MutableSharedFlow<JSONObject>(extraBufferCapacity = 64)
     val incomingMessages = _incomingMessages.asSharedFlow()
 
-    fun connect() {
+    fun connect(myPeerId: String) {
         scope.launch {
             try {
                 Log.d("SignalingClient", "Attempting to connect to ws://$hostIp:$port/signaling")
                 client.webSocket(method = HttpMethod.Get, host = hostIp, port = port, path = "/signaling") {
                     session = this
                     Log.d("SignalingClient", "Successfully connected to Host Signaling Server")
-                    
+
+                    // Send JOIN
+                    val joinMsg = JSONObject().apply {
+                        put("type", "JOIN")
+                        put("peerId", myPeerId)
+                    }
+                    send(Frame.Text(joinMsg.toString()))
+
                     incoming.consumeEach { frame ->
                         if (frame is Frame.Text) {
                             val message = frame.readText()
                             Log.d("SignalingClient", "Received from Host: $message")
-                            _incomingMessages.emit(message)
+                            _incomingMessages.emit(JSONObject(message))
                         }
                     }
                 }
@@ -47,9 +55,9 @@ class SignalingClient(private val hostIp: String, private val port: Int = 8080) 
         }
     }
 
-    fun sendMessage(message: String) {
+    fun sendMessage(json: JSONObject) {
         scope.launch {
-            session?.send(Frame.Text(message))
+            session?.send(Frame.Text(json.toString()))
         }
     }
 
