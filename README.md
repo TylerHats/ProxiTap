@@ -17,7 +17,7 @@ ProxiTap is the ultimate, decentralized local network walkie-talkie for Android.
 
 1. Download the latest APK from the [Releases](https://github.com/TylerHats/ProxiTap/releases) page.
 2. Install the APK on your Android device. 
-3. *Note: ProxiTap relies heavily on physical hardware capabilities. Some features like Wi-Fi Aware (NAN) and RTT Radar require modern Wi-Fi chipsets (e.g., Pixel 8, 9, 10 series).*
+3. *Note: ProxiTap relies heavily on physical hardware capabilities. Some features like Wi-Fi Aware (NAN) and RTT Radar require modern Wi-Fi chipsets.*
 
 ## 📜 Open Source & Licensing
 
