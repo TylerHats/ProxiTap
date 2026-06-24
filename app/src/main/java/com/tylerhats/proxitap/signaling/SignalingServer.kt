@@ -26,52 +26,56 @@ class SignalingServer {
 
     fun startServer(port: Int = 8080) {
         Log.d("SignalingServer", "Starting Ktor WebSocket server on port $port")
-        server = embeddedServer(CIO, port = port, host = "0.0.0.0") {
-            install(WebSockets) {
-                pingPeriod = Duration.ofSeconds(15)
-                timeout = Duration.ofSeconds(15)
-                maxFrameSize = Long.MAX_VALUE
-                masking = false
-            }
-            routing {
-                webSocket("/signaling") {
-                    Log.d("SignalingServer", "New client connected to signaling server")
-                    var currentPeerId: String? = null
-                    
-                    try {
-                        incoming.consumeEach { frame ->
-                            if (frame is Frame.Text) {
-                                val message = frame.readText()
-                                Log.d("SignalingServer", "Received message: $message")
-                                val json = JSONObject(message)
-                                val type = json.getString("type")
-                                
-                                if (type == "JOIN") {
-                                    currentPeerId = json.getString("peerId")
-                                    sessions[currentPeerId!!] = this
-                                }
-                                
-                                if (currentPeerId != null) {
-                                    // Route to Host's WebRTC engine
-                                    _incomingMessages.tryEmit(Pair(currentPeerId!!, json))
+        try {
+            server = embeddedServer(CIO, port = port, host = "0.0.0.0") {
+                install(WebSockets) {
+                    pingPeriod = Duration.ofSeconds(15)
+                    timeout = Duration.ofSeconds(15)
+                    maxFrameSize = Long.MAX_VALUE
+                    masking = false
+                }
+                routing {
+                    webSocket("/signaling") {
+                        Log.d("SignalingServer", "New client connected to signaling server")
+                        var currentPeerId: String? = null
+                        
+                        try {
+                            incoming.consumeEach { frame ->
+                                if (frame is Frame.Text) {
+                                    val message = frame.readText()
+                                    Log.d("SignalingServer", "Received message: $message")
+                                    val json = JSONObject(message)
+                                    val type = json.getString("type")
                                     
-                                    // Also route to target peer if this is a mesh message between two peers
-                                    if (json.has("target")) {
-                                        val targetId = json.getString("target")
-                                        sessions[targetId]?.send(Frame.Text(message))
+                                    if (type == "JOIN") {
+                                        currentPeerId = json.getString("peerId")
+                                        sessions[currentPeerId!!] = this
+                                    }
+                                    
+                                    if (currentPeerId != null) {
+                                        // Route to Host's WebRTC engine
+                                        _incomingMessages.tryEmit(Pair(currentPeerId!!, json))
+                                        
+                                        // Also route to target peer if this is a mesh message between two peers
+                                        if (json.has("target")) {
+                                            val targetId = json.getString("target")
+                                            sessions[targetId]?.send(Frame.Text(message))
+                                        }
                                     }
                                 }
                             }
+                        } catch (e: Exception) {
+                            Log.e("SignalingServer", "Error in WebSocket connection: ${e.message}")
+                        } finally {
+                            Log.d("SignalingServer", "Client $currentPeerId disconnected")
+                            currentPeerId?.let { sessions.remove(it) }
                         }
-                    } catch (e: Exception) {
-                        Log.e("SignalingServer", "Error in WebSocket connection: ${e.message}")
-                    } finally {
-                        Log.d("SignalingServer", "Client $currentPeerId disconnected")
-                        currentPeerId?.let { sessions.remove(it) }
                     }
                 }
-            }
-        }.start(wait = false)
+            }.start(wait = false)
+        } catch (e: Exception) {
+            Log.e("SignalingServer", "Failed to start Ktor server on port $port: ${e.message}")
+        }
     }
 
     suspend fun sendMessageToPeer(targetPeerId: String, json: JSONObject) {
