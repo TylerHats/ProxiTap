@@ -18,6 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.background
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
@@ -47,12 +48,35 @@ fun ScannerScreen(
         )
     }
 
+    var cameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
+    var isTransitioning by remember { mutableStateOf(false) }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
         onResult = { granted ->
             hasCameraPermission = granted
         }
     )
+
+    fun cleanupAndNavigate(action: () -> Unit) {
+        isTransitioning = true
+        try {
+            cameraProvider?.unbindAll()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        action()
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        onDispose {
+            try {
+                cameraProvider?.unbindAll()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
         if (!hasCameraPermission) {
@@ -78,79 +102,95 @@ fun ScannerScreen(
                     .padding(16.dp)
                     .clip(RoundedCornerShape(16.dp))
             ) {
-                AndroidView(
-                    factory = { ctx ->
-                        val previewView = PreviewView(ctx)
-                        val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
-                        val executor = Executors.newSingleThreadExecutor()
+                if (!isTransitioning) {
+                    AndroidView(
+                        factory = { ctx ->
+                            val previewView = PreviewView(ctx)
+                            val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
+                            val executor = Executors.newSingleThreadExecutor()
 
-                        cameraProviderFuture.addListener({
-                            val cameraProvider = cameraProviderFuture.get()
-                            val preview = Preview.Builder().build().also {
-                                it.setSurfaceProvider(previewView.surfaceProvider)
-                            }
+                            cameraProviderFuture.addListener({
+                                val provider = cameraProviderFuture.get()
+                                cameraProvider = provider
+                                val preview = Preview.Builder().build().also {
+                                    it.setSurfaceProvider(previewView.surfaceProvider)
+                                }
 
-                            val options = BarcodeScannerOptions.Builder()
-                                .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
-                                .build()
-                            val scanner = BarcodeScanning.getClient(options)
+                                val options = BarcodeScannerOptions.Builder()
+                                    .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                                    .build()
+                                val scanner = BarcodeScanning.getClient(options)
 
-                            val imageAnalysis = ImageAnalysis.Builder()
-                                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                                .build()
+                                val imageAnalysis = ImageAnalysis.Builder()
+                                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                                    .build()
 
-                            imageAnalysis.setAnalyzer(executor) { imageProxy ->
-                                val mediaImage = imageProxy.image
-                                if (mediaImage != null) {
-                                    val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
-                                    scanner.process(image)
-                                        .addOnSuccessListener { barcodes ->
-                                            for (barcode in barcodes) {
-                                                val value = barcode.rawValue
-                                                if (value != null && value.contains("https://pt.htsth.app/join")) {
-                                                    imageAnalysis.clearAnalyzer()
-                                                    onQrCodeScanned(value)
-                                                    break
+                                imageAnalysis.setAnalyzer(executor) { imageProxy ->
+                                    val mediaImage = imageProxy.image
+                                    if (mediaImage != null) {
+                                        val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+                                        scanner.process(image)
+                                            .addOnSuccessListener { barcodes ->
+                                                for (barcode in barcodes) {
+                                                    val value = barcode.rawValue
+                                                    if (value != null && value.contains("https://pt.htsth.app/join")) {
+                                                        imageAnalysis.clearAnalyzer()
+                                                        ContextCompat.getMainExecutor(context).execute {
+                                                            cleanupAndNavigate {
+                                                                onQrCodeScanned(value)
+                                                            }
+                                                        }
+                                                        break
+                                                    }
                                                 }
                                             }
-                                        }
-                                        .addOnCompleteListener {
-                                            imageProxy.close()
-                                        }
-                                } else {
-                                    imageProxy.close()
+                                            .addOnCompleteListener {
+                                                imageProxy.close()
+                                            }
+                                    } else {
+                                        imageProxy.close()
+                                    }
                                 }
-                            }
 
-                            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+                                val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
-                            try {
-                                cameraProvider.unbindAll()
-                                cameraProvider.bindToLifecycle(
-                                    lifecycleOwner,
-                                    cameraSelector,
-                                    preview,
-                                    imageAnalysis
-                                )
-                            } catch (e: Exception) {
-                                e.printStackTrace()
-                            }
-                        }, ContextCompat.getMainExecutor(ctx))
+                                try {
+                                    provider.unbindAll()
+                                    provider.bindToLifecycle(
+                                        lifecycleOwner,
+                                        cameraSelector,
+                                        preview,
+                                        imageAnalysis
+                                    )
+                                } catch (e: Exception) {
+                                    e.printStackTrace()
+                                }
+                            }, ContextCompat.getMainExecutor(ctx))
 
-                        previewView
-                    },
-                    onRelease = { ctx ->
-                        val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx.context)
-                        cameraProviderFuture.addListener({
-                            try {
-                                cameraProviderFuture.get().unbindAll()
-                            } catch (e: Exception) {
-                                e.printStackTrace()
-                            }
-                        }, ContextCompat.getMainExecutor(ctx.context))
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
+                            previewView
+                        },
+                        onRelease = { ctx ->
+                            val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx.context)
+                            cameraProviderFuture.addListener({
+                                try {
+                                    cameraProviderFuture.get().unbindAll()
+                                } catch (e: Exception) {
+                                    e.printStackTrace()
+                                }
+                            }, ContextCompat.getMainExecutor(ctx.context))
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.surfaceVariant),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                }
             }
         } else {
             Box(
@@ -176,7 +216,11 @@ fun ScannerScreen(
         Spacer(modifier = Modifier.weight(1f))
         
         OutlinedButton(
-            onClick = onCancelClick,
+            onClick = {
+                cleanupAndNavigate {
+                    onCancelClick()
+                }
+            },
             modifier = Modifier.fillMaxWidth().height(56.dp)
         ) {
             Text("Cancel")

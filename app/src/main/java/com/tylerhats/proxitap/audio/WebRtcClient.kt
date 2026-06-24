@@ -327,7 +327,8 @@ class WebRtcClient(private val context: Context) {
         
         val newSource = factory.createAudioSource(audioConstraints)
         val newTrack = factory.createAudioTrack("LOCAL_AUDIO_TRACK", newSource)
-        newTrack.setEnabled(true)
+        val wasEnabled = oldTrack?.enabled() ?: true
+        newTrack.setEnabled(wasEnabled)
         
         localAudioSource = newSource
         localAudioTrack = newTrack

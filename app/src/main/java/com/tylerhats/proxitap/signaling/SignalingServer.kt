@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.runBlocking
 import java.time.Duration
+import io.ktor.server.plugins.origin
 import io.ktor.server.cio.CIO
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
@@ -22,8 +23,11 @@ class SignalingServer {
     private val sessions = ConcurrentHashMap<String, DefaultWebSocketServerSession>()
     // peerId to deviceName
     private val participantNames = ConcurrentHashMap<String, String>()
+    // peerId to IP address
+    val peerIpAddresses = ConcurrentHashMap<String, String>()
 
     var hostName = "Host"
+    var maxParticipants = 4
 
     // For the Host to listen to incoming messages from Peers
     private val _incomingMessages = MutableSharedFlow<Pair<String, JSONObject>>(extraBufferCapacity = 64)
@@ -85,6 +89,22 @@ class SignalingServer {
                                     if (type == "JOIN") {
                                         currentPeerId = json.getString("peerId")
                                         val deviceName = if (json.has("deviceName")) json.getString("deviceName") else "Unknown Device"
+                                        
+                                        if (sessions.size + 1 >= maxParticipants) {
+                                            val rejectMsg = JSONObject().apply {
+                                                put("type", "REJECT")
+                                                put("reason", "Lobby is full (limit $maxParticipants)")
+                                            }
+                                            send(Frame.Text(rejectMsg.toString()))
+                                            close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Lobby is full"))
+                                            return@consumeEach
+                                        }
+                                        
+                                        val remoteHost = this.call.request.origin.remoteHost
+                                        val cleanRemoteHost = remoteHost.split('%').first()
+                                        peerIpAddresses[currentPeerId!!] = cleanRemoteHost
+                                        Log.d("SignalingServer", "Peer $currentPeerId connected from IP $cleanRemoteHost")
+                                        
                                         sessions[currentPeerId!!] = this
                                         participantNames[currentPeerId!!] = deviceName
                                         broadcastParticipants()
@@ -125,10 +145,11 @@ class SignalingServer {
                         } finally {
                             Log.d("SignalingServer", "Client $currentPeerId disconnected")
                             currentPeerId?.let { 
-                                sessions.remove(it)
-                                participantNames.remove(it)
-                                broadcastParticipants()
-                            }
+                                        sessions.remove(it)
+                                        participantNames.remove(it)
+                                        peerIpAddresses.remove(it)
+                                        broadcastParticipants()
+                                    }                  
                         }
                     }
                 }

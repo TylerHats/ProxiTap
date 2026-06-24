@@ -40,9 +40,10 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
 
     private val _connectedPeers = MutableStateFlow<List<PeerHandle>>(emptyList())
     val connectedPeers: StateFlow<List<PeerHandle>> = _connectedPeers.asStateFlow()
+    val peerIpToHandleMap = java.util.concurrent.ConcurrentHashMap<String, PeerHandle>()
 
     @SuppressLint("MissingPermission")
-    override suspend fun startHosting(lobbyName: String, pin: String, isMediaLobby: Boolean, isBidirectional: Boolean): String = suspendCancellableCoroutine { continuation ->
+    override suspend fun startHosting(lobbyName: String, pin: String, isMediaLobby: Boolean, isBidirectional: Boolean, enableRadar: Boolean, isGroupVoice: Boolean): String = suspendCancellableCoroutine { continuation ->
         stop()
         if (wifiAwareManager == null || !context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)) {
             continuation.resumeWithException(Exception("Wi-Fi Aware not supported on this device"))
@@ -56,7 +57,7 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
 
         currentSessionId = UUID.randomUUID().toString().take(8)
         currentPin = pin
-        val serviceInfo = "$lobbyName|${if(pin.isNotBlank()) 1 else 0}|$currentSessionId|${if(isMediaLobby) 1 else 0}|${if(isBidirectional) 1 else 0}"
+        val serviceInfo = "$lobbyName|${if(pin.isNotBlank()) 1 else 0}|$currentSessionId|${if(isMediaLobby) 1 else 0}|${if(isBidirectional) 1 else 0}|${if(enableRadar) 1 else 0}|${if(isGroupVoice) 1 else 0}"
 
         wifiAwareManager.attach(object : AttachCallback() {
             override fun onAttached(session: WifiAwareSession) {
@@ -120,6 +121,7 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
         } catch (e: Exception) {}
         localHostIpv6 = null
         _connectedPeers.value = emptyList()
+        peerIpToHandleMap.clear()
     }
 
     @SuppressLint("MissingPermission")
@@ -270,6 +272,17 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
             .build()
 
         val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                super.onCapabilitiesChanged(network, networkCapabilities)
+                val awareInfo = networkCapabilities.transportInfo as? WifiAwareNetworkInfo
+                awareInfo?.peerIpv6Addr?.let { ipv6 ->
+                    val ip = ipv6.hostAddress ?: return@let
+                    val cleanIp = ip.split('%').first()
+                    Log.d("NanImpl", "Host mapped peer IP: $cleanIp to PeerHandle: $peerHandle")
+                    peerIpToHandleMap[cleanIp] = peerHandle
+                }
+            }
+
             override fun onAvailable(network: Network) {
                 Log.d("NanImpl", "Host Data Path Established with Peer!")
                 connectivityManager.bindProcessToNetwork(network)

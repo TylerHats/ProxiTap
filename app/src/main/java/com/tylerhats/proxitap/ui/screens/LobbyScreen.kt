@@ -22,11 +22,14 @@ fun generateQrCode(text: String, size: Int): Bitmap? {
         val width = bitMatrix.width
         val height = bitMatrix.height
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565)
-        for (x in 0 until width) {
-            for (y in 0 until height) {
-                bitmap.setPixel(x, y, if (bitMatrix.get(x, y)) AndroidColor.BLACK else AndroidColor.WHITE)
+        val pixels = IntArray(width * height)
+        for (y in 0 until height) {
+            val offset = y * width
+            for (x in 0 until width) {
+                pixels[offset + x] = if (bitMatrix.get(x, y)) AndroidColor.BLACK else AndroidColor.WHITE
             }
         }
+        bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
         bitmap
     } catch (e: WriterException) {
         e.printStackTrace()
@@ -38,13 +41,17 @@ fun generateQrCode(text: String, size: Int): Bitmap? {
 fun LobbyScreen(
     qrPayload: String,
     buttonText: String = "Start Call",
+    qrBitmap: Bitmap? = null,
     onStartCallClick: () -> Unit
 ) {
-    var qrBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var localQrBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    val displayBitmap = qrBitmap ?: localQrBitmap
     
-    LaunchedEffect(qrPayload) {
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            qrBitmap = generateQrCode(qrPayload, 500)
+    if (qrBitmap == null) {
+        LaunchedEffect(qrPayload) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                localQrBitmap = generateQrCode(qrPayload, 300)
+            }
         }
     }
 
@@ -58,9 +65,9 @@ fun LobbyScreen(
         Text("Lobby Started", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(32.dp))
         
-        if (qrBitmap != null) {
+        if (displayBitmap != null) {
             Image(
-                bitmap = qrBitmap!!.asImageBitmap(),
+                bitmap = displayBitmap.asImageBitmap(),
                 contentDescription = "QR Code for Lobby",
                 modifier = Modifier
                     .size(250.dp)

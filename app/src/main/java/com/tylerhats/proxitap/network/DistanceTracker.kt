@@ -54,13 +54,13 @@ class DistanceTracker(private val context: Context) {
                             for (result in results) {
                                 if (result.status == RangingResult.STATUS_SUCCESS) {
                                     val distanceMeters = result.distanceMm / 1000f
-                                    // Wi-Fi RTT results don't expose the original PeerHandle easily in public API,
-                                    // but we can map them back if we only range one at a time, or assume order.
-                                    // For ProxiTap, we typically only have 1 peer connected in V1.
-                                    // Note: In a robust app, we'd iterate and map them properly.
-                                    if (peers.size == 1) {
-                                        newDistances[peers[0]] = distanceMeters
+                                    val peerHandle = result.peerHandle
+                                    if (peerHandle != null) {
+                                        newDistances[peerHandle] = distanceMeters
                                         Log.d("DistanceTracker", "Distance to peer: $distanceMeters meters")
+                                    } else if (peers.size == 1) {
+                                        newDistances[peers[0]] = distanceMeters
+                                        Log.d("DistanceTracker", "Distance to peer (fallback): $distanceMeters meters")
                                     }
                                 }
                             }
@@ -68,7 +68,7 @@ class DistanceTracker(private val context: Context) {
                         }
                     })
                 }
-                delay(5000) // Poll every 5 seconds
+                delay(2000) // Poll every 2 seconds for responsive radar
             }
         }
     }

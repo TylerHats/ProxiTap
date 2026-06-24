@@ -25,6 +25,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONObject
@@ -38,6 +39,7 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
     private val myPeerId = UUID.randomUUID().toString()
     private var isEndingCall = false
     private val initDeferred = kotlinx.coroutines.CompletableDeferred<Unit>()
+    private var callStartTime = 0L
     
     // Core Dependencies
     lateinit var webRtcClient: WebRtcClient
@@ -57,6 +59,14 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
 
     private val _participants = MutableStateFlow<List<String>>(emptyList())
     val participants: StateFlow<List<String>> = _participants
+
+    private val _rawParticipants = MutableStateFlow<List<RawParticipant>>(emptyList())
+    
+    private data class RawParticipant(
+        val id: String,
+        val name: String,
+        val isHost: Boolean
+    )
 
     private val _isMuted = MutableStateFlow(false)
     val isMuted: StateFlow<Boolean> = _isMuted
@@ -79,6 +89,8 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
     var isMediaLobby = false
         private set
     var isBidirectional = false
+        private set
+    var isGroupVoice = false
         private set
     private var mediaStreamer: MediaStreamer? = null
     
@@ -205,6 +217,45 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         } else {
             registerReceiver(pttReceiver, filter)
         }
+
+        // Reactive combined participants distance tracking
+        scope.launch {
+            combine(
+                _rawParticipants,
+                distanceTracker.peerDistances
+            ) { plist, distances ->
+                plist.map { p ->
+                    val isMe = (p.id == myPeerId) || (isHostSignaling && p.id == "HOST")
+                    var distStr = ""
+                    if (!isMe) {
+                        val distance = if (isHostSignaling) {
+                            val ip = signalingServer?.peerIpAddresses?.get(p.id)
+                            val handle = ip?.let { nanImpl.peerIpToHandleMap[it] }
+                            distances[handle]
+                        } else {
+                            if (p.isHost) {
+                                distances.values.firstOrNull()
+                            } else {
+                                null
+                            }
+                        }
+                        if (distance != null) {
+                            distStr = " - %.1fm".format(distance)
+                        }
+                    }
+
+                    val suffix = when {
+                        isMe && p.isHost -> " (You, Host)"
+                        isMe -> " (You)"
+                        p.isHost -> " (Host)"
+                        else -> ""
+                    }
+                    "${p.name}$suffix$distStr"
+                }
+            }.collect { formattedList ->
+                _participants.value = formattedList
+            }
+        }
     }
 
     companion object {
@@ -212,9 +263,13 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         const val ACTION_SET_MUTE = "com.tylerhats.proxitap.action.SET_MUTE"
     }
 
-    fun initializeCall(mediaLobby: Boolean, bidirectional: Boolean, mediaResult: Int = 0, mediaData: Intent? = null) {
+    fun initializeCall(mediaLobby: Boolean, bidirectional: Boolean, groupVoice: Boolean, mediaResult: Int = 0, mediaData: Intent? = null) {
         isMediaLobby = mediaLobby
         isBidirectional = bidirectional
+        isGroupVoice = groupVoice
+        if (callStartTime == 0L) {
+            callStartTime = System.currentTimeMillis()
+        }
 
         if (!isMediaLobby) {
             try {
@@ -230,9 +285,10 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         
         if (mediaStreamer == null) {
             mediaStreamer = MediaStreamer(this)
-            mediaStreamer?.startPlayback(isMono = !isMediaLobby)
+            val useMono = !isMediaLobby || isGroupVoice
+            mediaStreamer?.startPlayback(isMono = useMono)
             
-            if (isMediaLobby && mediaResult != 0 && mediaData != null) {
+            if (isMediaLobby && !isGroupVoice && mediaResult != 0 && mediaData != null) {
                 val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
                 val projection = mediaProjectionManager.getMediaProjection(mediaResult, mediaData)
                 if (projection != null) {
@@ -246,8 +302,7 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                         }
                     }
                 }
-            } else if (isMediaLobby && isBidirectional) {
-                // In Media Lobbies with bidirectional audio, we can still use MediaStreamer mic
+            } else if (isMediaLobby && isGroupVoice) {
                 mediaStreamer?.startMicrophoneCapture { audioData ->
                     if (!_isMuted.value) {
                         scope.launch {
@@ -272,6 +327,19 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         initDeferred.complete(Unit)
     }
 
+    private fun monoToStereo(monoData: ByteArray): ByteArray {
+        val stereoData = ByteArray(monoData.size * 2)
+        for (i in 0 until monoData.size step 2) {
+            if (i + 1 < monoData.size) {
+                stereoData[i * 2] = monoData[i]
+                stereoData[i * 2 + 1] = monoData[i + 1]
+                stereoData[i * 2 + 2] = monoData[i]
+                stereoData[i * 2 + 3] = monoData[i + 1]
+            }
+        }
+        return stereoData
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_END_CALL) {
             Log.d("CallService", "Received ACTION_END_CALL from Notification")
@@ -287,15 +355,17 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
 
         // Determine service type early to call startForeground before getting projection
         val isMedia = intent?.getBooleanExtra("isMediaLobby", false) ?: false
+        val requiresProjection = intent?.getBooleanExtra("requiresProjection", false) ?: false
+        
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            val type = if (isMedia) {
+            val type = if (isMedia && requiresProjection) {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             } else {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
             }
             startForeground(1, createNotification(), type)
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val type = if (isMedia) {
+            val type = if (isMedia && requiresProjection) {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             } else {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
@@ -312,6 +382,7 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                 initializeCall(
                     it.getBooleanExtra("isMediaLobby", false),
                     it.getBooleanExtra("isBidirectional", false),
+                    it.getBooleanExtra("isGroupVoice", false),
                     mResult,
                     mData
                 )
@@ -419,6 +490,10 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                     signalingClient?.sendMessage(updateMsg)
                 }
             }
+            "max_participants" -> {
+                val maxParts = if (!isMediaLobby) 2 else sharedPreferences.getInt(key, 4)
+                signalingServer?.maxParticipants = maxParts
+            }
         }
     }
 
@@ -449,8 +524,10 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             
             val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
             val hostDisplayName = prefs.getString("display_name", Build.MODEL) ?: Build.MODEL
+            val maxParts = if (!isMediaLobby) 2 else prefs.getInt("max_participants", 4)
             signalingServer = SignalingServer().apply {
                 hostName = hostDisplayName
+                maxParticipants = maxParts
             }
             signalingServer?.startServer(port)
 
@@ -522,23 +599,16 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                 }
                 else if (type == "PARTICIPANTS_UPDATE") {
                     val array = json.getJSONArray("participants")
-                    val list = mutableListOf<String>()
+                    val list = mutableListOf<RawParticipant>()
                     for (i in 0 until array.length()) {
                         val p = array.getJSONObject(i)
-                        val name = p.getString("name")
-                        val id = p.getString("id")
-                        val isHostParticipant = p.optBoolean("isHost", false)
-                        
-                        val isMe = (id == myPeerId) || (isHostSignaling && id == "HOST")
-                        val suffix = when {
-                            isMe && isHostParticipant -> " (You, Host)"
-                            isMe -> " (You)"
-                            isHostParticipant -> " (Host)"
-                            else -> ""
-                        }
-                        list.add("$name$suffix")
+                        list.add(RawParticipant(
+                            id = p.getString("id"),
+                            name = p.getString("name"),
+                            isHost = p.optBoolean("isHost", false)
+                        ))
                     }
-                    _participants.value = list
+                    _rawParticipants.value = list
                 }
                 else if (type == "ANSWER" && !isMediaLobby) {
                     webRtcClient.handleRemoteAnswer(senderId, json.getString("sdp"))
@@ -566,7 +636,6 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             signalingServer?.incomingAudio?.collect { (_, audioData) ->
                 if (isMediaLobby) {
                     mediaStreamer?.playAudioData(audioData)
-                    signalingServer?.broadcastAudioData(audioData)
                 } else {
                     udpProxy?.sendUdpData(audioData)
                 }
@@ -626,6 +695,17 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         scope.launch {
             signalingClient?.incomingMessages?.collect { json ->
                 val type = json.getString("type")
+                if (type == "REJECT") {
+                    val reason = json.optString("reason", "Lobby is full")
+                    Log.w("CallService", "Rejected by Host: $reason")
+                    scope.launch(Dispatchers.Main) {
+                        android.widget.Toast.makeText(this@CallService, "Connection failed: $reason", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                    sendBroadcast(Intent("com.tylerhats.proxitap.CALL_ENDED").setPackage(packageName))
+                    endCall()
+                    return@collect
+                }
+                
                 if (type == "SESSION_CLOSED") {
                     Log.d("CallService", "Host closed the session. Ending call.")
                     sendBroadcast(Intent("com.tylerhats.proxitap.CALL_ENDED").setPackage(packageName))
@@ -637,23 +717,16 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
 
                 if (type == "PARTICIPANTS_UPDATE") {
                     val array = json.getJSONArray("participants")
-                    val list = mutableListOf<String>()
+                    val list = mutableListOf<RawParticipant>()
                     for (i in 0 until array.length()) {
                         val p = array.getJSONObject(i)
-                        val name = p.getString("name")
-                        val id = p.getString("id")
-                        val isHostParticipant = p.optBoolean("isHost", false)
-                        
-                        val isMe = (id == myPeerId) || (isHostSignaling && id == "HOST")
-                        val suffix = when {
-                            isMe && isHostParticipant -> " (You, Host)"
-                            isMe -> " (You)"
-                            isHostParticipant -> " (Host)"
-                            else -> ""
-                        }
-                        list.add("$name$suffix")
+                        list.add(RawParticipant(
+                            id = p.getString("id"),
+                            name = p.getString("name"),
+                            isHost = p.optBoolean("isHost", false)
+                        ))
                     }
-                    _participants.value = list
+                    _rawParticipants.value = list
                 }
                 else if (type == "SETTINGS" && !isMediaLobby) {
                     val bitrate = json.optInt("opusBitrate", 64000)
@@ -736,9 +809,11 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         }
 
         _isSpeaking.value = false
+        _rawParticipants.value = emptyList()
         _participants.value = emptyList()
         _connectionStats.value = emptyMap()
         _hasJoined.value = false
+        callStartTime = 0L
         
         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         am.mode = AudioManager.MODE_NORMAL
@@ -884,7 +959,10 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setStyle(callStyle)
             .addAction(muteAction)
+            .setWhen(callStartTime)
             .setUsesChronometer(true) // Native animated timer for the call duration!
+            .setShowWhen(true)
+            .setOnlyAlertOnce(true)
             .setContentIntent(pendingAppIntent)
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_CALL)

@@ -123,7 +123,7 @@ fun CallScreen(
             color = if (isReconnecting) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.secondary
         )
 
-        if (distanceMeters != null && !isReconnecting) {
+        if (distanceMeters != null && !isReconnecting && participants.size <= 2) {
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 text = "Distance: %.1fm".format(distanceMeters),
@@ -144,8 +144,9 @@ fun CallScreen(
                     .padding(8.dp)
             ) {
                 items(participants.size) { index ->
+                    val rawName = participants[index]
                     Text(
-                        text = "• ${participants[index]}",
+                        text = "• $rawName",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(vertical = 4.dp)

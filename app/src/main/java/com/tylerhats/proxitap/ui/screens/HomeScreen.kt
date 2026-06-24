@@ -9,7 +9,7 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 fun HomeScreen(
-    onHostClick: (String, String?, Boolean, Boolean, Boolean, Boolean) -> Unit,
+    onHostClick: (String, String?, Boolean, Boolean, Boolean, Boolean, Boolean) -> Unit,
     onJoinClick: () -> Unit,
     onSearchAreaClick: () -> Unit
 ) {
@@ -17,8 +17,8 @@ fun HomeScreen(
     var pin by remember { mutableStateOf("") }
     var useHotspot by remember { mutableStateOf(false) }
     var enableRadar by remember { mutableStateOf(false) }
-    var isMediaLobby by remember { mutableStateOf(false) }
-    var isBidirectional by remember { mutableStateOf(false) }
+    var callType by remember { mutableStateOf(0) } // 0 = Direct Voice (1-on-1), 1 = Group Voice (3-8 people), 2 = Media Sharing
+    var isBidirectional by remember { mutableStateOf(true) }
 
     Column(
         modifier = Modifier
@@ -100,25 +100,45 @@ fun HomeScreen(
             }
         }
         
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column {
-                Text("Media Lobby (System Audio)", style = MaterialTheme.typography.bodyLarge)
-                Text("Broadcasts device audio instead of mic.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            Switch(
-                checked = isMediaLobby,
-                onCheckedChange = { 
-                    isMediaLobby = it 
-                    if (!it) isBidirectional = false
+        Spacer(modifier = Modifier.height(16.dp))
+        Text("Call Type", style = MaterialTheme.typography.titleMedium, modifier = Modifier.align(Alignment.Start))
+        Spacer(modifier = Modifier.height(8.dp))
+        
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(
+                "Direct Voice (1-on-1)" to "Uses WebRTC. Recommended for 2 people. Provides crystal clear audio with hardware echo cancellation.",
+                "Group Voice (3-8 people)" to "Uses low-overhead WebSockets. Recommended for group calls. No screen capture permissions required.",
+                "Media Sharing" to "Broadcasts your phone's system audio (music/video) to peers. Mics are disabled."
+            ).forEachIndexed { index, (title, desc) ->
+                Card(
+                    onClick = { callType = index },
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (callType == index) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(
+                                selected = callType == index,
+                                onClick = { callType = index }
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(title, style = MaterialTheme.typography.titleSmall)
+                        }
+                        Text(
+                            text = desc,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 32.dp)
+                        )
+                    }
                 }
-            )
+            }
         }
 
-        if (isMediaLobby) {
+        if (callType == 2) {
+            Spacer(modifier = Modifier.height(8.dp))
             Row(
                 modifier = Modifier.fillMaxWidth().padding(start = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -137,7 +157,10 @@ fun HomeScreen(
         Button(
             onClick = { 
                 val finalName = lobbyName.takeIf { it.isNotBlank() } ?: "ProxiTap_Lobby_${(100..999).random()}"
-                onHostClick(finalName, pin.takeIf { it.isNotBlank() }, useHotspot, enableRadar, isMediaLobby, isBidirectional) 
+                val isMedia = callType != 0
+                val isBidi = callType == 1 || (callType == 2 && isBidirectional)
+                val reqProj = callType == 2
+                onHostClick(finalName, pin.takeIf { it.isNotBlank() }, useHotspot, enableRadar, isMedia, isBidi, reqProj) 
             },
             modifier = Modifier.fillMaxWidth().height(56.dp)
         ) {
