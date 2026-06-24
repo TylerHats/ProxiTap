@@ -13,6 +13,7 @@ import android.net.wifi.WifiManager
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.tylerhats.proxitap.signaling.SignalingClient
@@ -54,6 +55,7 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
     
     private var hardwarePttManager: HardwarePttManager? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private var wakeLock: PowerManager.WakeLock? = null
     private var pttReceiver: BroadcastReceiver? = null
 
     inner class LocalBinder : Binder() {
@@ -106,6 +108,11 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             "ProxiTap::CallServiceWifiLock"
         )
         wifiLock?.acquire()
+
+        // Acquire CPU WakeLock to prevent audio stuttering when screen is off
+        val powerManager = applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
+        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ProxiTap::CallServiceCpuWakeLock")
+        wakeLock?.acquire()
 
         // Register receiver for Volume PTT Accessibility Service
         pttReceiver = object : BroadcastReceiver() {
@@ -311,6 +318,11 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             if (it.isHeld) it.release()
         }
         wifiLock = null
+
+        wakeLock?.let {
+            if (it.isHeld) it.release()
+        }
+        wakeLock = null
 
         pttReceiver?.let { unregisterReceiver(it) }
 
