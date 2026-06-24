@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
@@ -22,8 +23,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.util.UUID
+import android.content.SharedPreferences
 
-class CallService : Service() {
+class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListener {
 
     private val binder = LocalBinder()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -58,9 +60,18 @@ class CallService : Service() {
         createNotificationChannel()
         
         val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
+        prefs.registerOnSharedPreferenceChangeListener(this)
+        
         val nsEnabled = prefs.getBoolean("ns_enabled", true)
         val aecEnabled = prefs.getBoolean("aec_enabled", true)
         val pttEnabled = prefs.getBoolean("hardware_ptt", true)
+        val useBluetoothMic = prefs.getBoolean("bluetooth_mic", true)
+
+        if (useBluetoothMic) {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            audioManager.startBluetoothSco()
+            audioManager.isBluetoothScoOn = true
+        }
 
         webRtcClient = WebRtcClient(this).apply {
             isNoiseSuppressionEnabled = nsEnabled
@@ -105,6 +116,35 @@ class CallService : Service() {
 
     override fun onBind(intent: Intent?): IBinder {
         return binder
+    }
+
+    override fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences?, key: String?) {
+        if (sharedPreferences == null || key == null) return
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+        when (key) {
+            "ns_enabled" -> {
+                webRtcClient.isNoiseSuppressionEnabled = sharedPreferences.getBoolean(key, true)
+                // Note: WebRTC hardware ADM constraints cannot be hot-swapped without rebuilding the AudioTrack.
+                // However, software processing in WebRTC would adapt. For V1 we update the field.
+            }
+            "aec_enabled" -> {
+                webRtcClient.isAcousticEchoCancellationEnabled = sharedPreferences.getBoolean(key, true)
+            }
+            "hardware_ptt" -> {
+                hardwarePttManager?.isHardwarePttEnabled = sharedPreferences.getBoolean(key, true)
+            }
+            "bluetooth_mic" -> {
+                val useBluetooth = sharedPreferences.getBoolean(key, true)
+                if (useBluetooth) {
+                    audioManager.startBluetoothSco()
+                    audioManager.isBluetoothScoOn = true
+                } else {
+                    audioManager.stopBluetoothSco()
+                    audioManager.isBluetoothScoOn = false
+                }
+            }
+        }
     }
 
     fun startHostSignaling(port: Int = 8080) {
@@ -213,12 +253,21 @@ class CallService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
+        prefs.unregisterOnSharedPreferenceChangeListener(this)
+        
         scope.cancel()
         webRtcClient.dispose()
         signalingServer?.stopServer()
         signalingClient?.disconnect()
         hardwarePttManager?.stop()
         hardwarePttManager?.release()
+        
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        if (audioManager.isBluetoothScoOn) {
+            audioManager.stopBluetoothSco()
+            audioManager.isBluetoothScoOn = false
+        }
     }
 
     private fun createNotificationChannel() {

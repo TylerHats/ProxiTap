@@ -22,6 +22,7 @@ class HotspotImpl(private val context: Context) : LocalNetworkManager {
     
     private var hotspotReservation: WifiManager.LocalOnlyHotspotReservation? = null
     private var peerNetworkCallback: ConnectivityManager.NetworkCallback? = null
+    private var hostIpAddress: String? = null
 
     @SuppressLint("MissingPermission") // Permissions are requested in the UI layer
     override suspend fun startHosting(lobbyName: String, hasPin: Boolean): String = suspendCancellableCoroutine { continuation ->
@@ -67,6 +68,7 @@ class HotspotImpl(private val context: Context) : LocalNetworkManager {
             connectivityManager.unregisterNetworkCallback(it)
         }
         peerNetworkCallback = null
+        hostIpAddress = null
     }
 
     override suspend fun joinLobby(payload: String): Boolean = suspendCancellableCoroutine { continuation ->
@@ -109,8 +111,21 @@ class HotspotImpl(private val context: Context) : LocalNetworkManager {
                 Log.d("HotspotImpl", "Successfully connected to Hotspot!")
                 // Bind the app's process to this specific network so WebRTC traffic goes over it
                 connectivityManager.bindProcessToNetwork(network)
-                if (continuation.isActive) {
-                    continuation.resume(true)
+            }
+
+            override fun onLinkPropertiesChanged(network: Network, linkProperties: android.net.LinkProperties) {
+                super.onLinkPropertiesChanged(network, linkProperties)
+                
+                // For Hotspot peers, the host is the default gateway.
+                for (route in linkProperties.routes) {
+                    if (route.isDefaultRoute) {
+                        hostIpAddress = route.gateway?.hostAddress
+                        Log.d("HotspotImpl", "Discovered Host Gateway IP: $hostIpAddress")
+                        if (continuation.isActive) {
+                            continuation.resume(true)
+                        }
+                        break
+                    }
                 }
             }
 
@@ -127,10 +142,6 @@ class HotspotImpl(private val context: Context) : LocalNetworkManager {
     }
 
     override fun getLocalIpAddress(): String? {
-        // For Hotspot owner, it's typically a standard gateway IP, but we can query interfaces.
-        // As a peer, the OS handles IP assignment.
-        // We will implement a network interface scanner later if WebRTC needs explicit IP binding.
-        // For now, WebRTC's ICE framework automatically discovers local interface IPs!
-        return null
+        return hostIpAddress
     }
 }
