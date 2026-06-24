@@ -1,6 +1,8 @@
 package com.tylerhats.proxitap.ui.screens
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -24,9 +26,10 @@ fun HomeScreen(
         modifier = Modifier
             .fillMaxSize()
             .systemBarsPadding()
-            .padding(24.dp),
+            .padding(24.dp)
+            .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        verticalArrangement = Arrangement.Top
     ) {
         Text(
             text = "ProxiTap",
@@ -129,7 +132,7 @@ fun HomeScreen(
                         Text(
                             text = desc,
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (callType == index) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(start = 32.dp)
                         )
                     }
