@@ -139,6 +139,16 @@ fun ScannerScreen(
 
                         previewView
                     },
+                    onRelease = { ctx ->
+                        val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx.context)
+                        cameraProviderFuture.addListener({
+                            try {
+                                cameraProviderFuture.get().unbindAll()
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                            }
+                        }, ContextCompat.getMainExecutor(ctx.context))
+                    },
                     modifier = Modifier.fillMaxSize()
                 )
             }

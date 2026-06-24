@@ -1,5 +1,7 @@
 package com.tylerhats.proxitap.ui.screens
 
+import androidx.compose.runtime.*
+
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -13,16 +15,21 @@ import androidx.compose.ui.unit.dp
 data class DiscoveredLobby(
     val name: String,
     val isProtected: Boolean,
+    val isMedia: Boolean,
+    val isBidi: Boolean,
     val payload: String
 )
+
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ServerListScreen(
     discoveredLobbies: List<DiscoveredLobby>,
-    onLobbyClick: (DiscoveredLobby) -> Unit,
+    onLobbyClick: (DiscoveredLobby, String) -> Unit,
     onBackClick: () -> Unit
 ) {
+    var selectedLobby by remember { mutableStateOf<DiscoveredLobby?>(null) }
+    var pinInput by remember { mutableStateOf("") }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -55,7 +62,14 @@ fun ServerListScreen(
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onLobbyClick(lobby) },
+                            .clickable {
+                                if (lobby.isProtected) {
+                                    selectedLobby = lobby
+                                    pinInput = ""
+                                } else {
+                                    onLobbyClick(lobby, "")
+                                }
+                            },
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                     ) {
                         Row(
@@ -65,10 +79,25 @@ fun ServerListScreen(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = lobby.name,
-                                style = MaterialTheme.typography.titleMedium
-                            )
+                            Column {
+                                Text(
+                                    text = lobby.name,
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                                if (lobby.isMedia) {
+                                    Text(
+                                        text = if (lobby.isBidi) "Media (Bidirectional)" else "Media (Broadcast)",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                } else {
+                                    Text(
+                                        text = "Voice Call",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
                             Text(
                                 text = if (lobby.isProtected) "🔒" else "🔓",
                                 style = MaterialTheme.typography.titleLarge
@@ -77,6 +106,34 @@ fun ServerListScreen(
                     }
                 }
             }
+        }
+        
+        selectedLobby?.let { lobby ->
+            AlertDialog(
+                onDismissRequest = { selectedLobby = null },
+                title = { Text("Enter PIN") },
+                text = {
+                    OutlinedTextField(
+                        value = pinInput,
+                        onValueChange = { pinInput = it },
+                        label = { Text("PIN") },
+                        singleLine = true
+                    )
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        onLobbyClick(lobby, pinInput)
+                        selectedLobby = null
+                    }) {
+                        Text("Join")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { selectedLobby = null }) {
+                        Text("Cancel")
+                    }
+                }
+            )
         }
     }
 }

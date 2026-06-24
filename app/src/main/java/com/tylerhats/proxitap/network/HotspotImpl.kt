@@ -25,7 +25,7 @@ class HotspotImpl(private val context: Context) : LocalNetworkManager {
     private var hostIpAddress: String? = null
 
     @SuppressLint("MissingPermission") // Permissions are requested in the UI layer
-    override suspend fun startHosting(lobbyName: String, hasPin: Boolean): String = suspendCancellableCoroutine { continuation ->
+    override suspend fun startHosting(lobbyName: String, pin: String, isMediaLobby: Boolean, isBidirectional: Boolean): String = suspendCancellableCoroutine { continuation ->
         Log.d("HotspotImpl", "Starting LocalOnlyHotspot...")
         try {
             wifiManager.startLocalOnlyHotspot(object : WifiManager.LocalOnlyHotspotCallback() {
@@ -61,7 +61,7 @@ class HotspotImpl(private val context: Context) : LocalNetworkManager {
         }
     }
 
-    override fun discoverLobbies(onLobbyFound: (String, Boolean, String) -> Unit) {
+    override fun discoverLobbies(onLobbyFound: (String, Boolean, Boolean, Boolean, String) -> Unit) {
         // Hotspot discovery not implemented yet
     }
 
@@ -79,7 +79,7 @@ class HotspotImpl(private val context: Context) : LocalNetworkManager {
         hostIpAddress = null
     }
 
-    override suspend fun joinLobby(payload: String): Boolean = suspendCancellableCoroutine { continuation ->
+    override suspend fun joinLobby(payload: String, pin: String): Boolean = suspendCancellableCoroutine { continuation ->
         // Expected payload: WIFI:T:WPA;S:NetworkName;P:Password;;
         if (!payload.startsWith("WIFI:")) {
             continuation.resumeWithException(Exception("Invalid QR Code payload for Hotspot"))
@@ -114,27 +114,48 @@ class HotspotImpl(private val context: Context) : LocalNetworkManager {
             .build()
 
         peerNetworkCallback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                super.onAvailable(network)
-                Log.d("HotspotImpl", "Successfully connected to Hotspot!")
-                // Bind the app's process to this specific network so WebRTC traffic goes over it
-                connectivityManager.bindProcessToNetwork(network)
+            var isAvailable = false
+            var hasIp = false
+
+            private fun checkAndResume() {
+                if (isAvailable && hasIp) {
+                    if (continuation.isActive) {
+                        continuation.resume(true)
+                    }
+                }
             }
 
             override fun onLinkPropertiesChanged(network: Network, linkProperties: android.net.LinkProperties) {
                 super.onLinkPropertiesChanged(network, linkProperties)
-                
-                // For Hotspot peers, the host is the default gateway.
-                for (route in linkProperties.routes) {
-                    if (route.isDefaultRoute) {
-                        hostIpAddress = route.gateway?.hostAddress
-                        Log.d("HotspotImpl", "Discovered Host Gateway IP: $hostIpAddress")
-                        if (continuation.isActive) {
-                            continuation.resume(true)
-                        }
-                        break
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                    val dhcpAddress = linkProperties.dhcpServerAddress?.hostAddress
+                    if (dhcpAddress != null) {
+                        hostIpAddress = dhcpAddress
+                        Log.d("HotspotImpl", "Host IP Discovered via DHCP Server: $hostIpAddress")
+                        hasIp = true
+                        checkAndResume()
                     }
                 }
+                
+                if (!hasIp) {
+                    for (route in linkProperties.routes) {
+                        if (route.isDefaultRoute) {
+                            hostIpAddress = route.gateway?.hostAddress
+                            Log.d("HotspotImpl", "Discovered Host Gateway IP: $hostIpAddress")
+                            hasIp = true
+                            checkAndResume()
+                            break
+                        }
+                    }
+                }
+            }
+
+            override fun onAvailable(network: Network) {
+                super.onAvailable(network)
+                Log.d("HotspotImpl", "Peer Data Path Established!")
+                connectivityManager.bindProcessToNetwork(network)
+                isAvailable = true
+                checkAndResume()
             }
 
             override fun onUnavailable() {

@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.CancellableContinuation
 import java.util.UUID
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -33,12 +34,14 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
 
     private val DISCOVERY_SERVICE_NAME = "ProxiTap_Discovery"
     private var currentSessionId: String = ""
+    private var currentPin: String = ""
 
     private val _connectedPeers = MutableStateFlow<List<PeerHandle>>(emptyList())
     val connectedPeers: StateFlow<List<PeerHandle>> = _connectedPeers.asStateFlow()
 
     @SuppressLint("MissingPermission")
-    override suspend fun startHosting(lobbyName: String, hasPin: Boolean): String = suspendCancellableCoroutine { continuation ->
+    override suspend fun startHosting(lobbyName: String, pin: String, isMediaLobby: Boolean, isBidirectional: Boolean): String = suspendCancellableCoroutine { continuation ->
+        stop()
         if (wifiAwareManager == null || !context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)) {
             continuation.resumeWithException(Exception("Wi-Fi Aware not supported on this device"))
             return@suspendCancellableCoroutine
@@ -50,7 +53,8 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
         }
 
         currentSessionId = UUID.randomUUID().toString().take(8)
-        val serviceInfo = "$lobbyName|${if(hasPin) 1 else 0}|$currentSessionId"
+        currentPin = pin
+        val serviceInfo = "$lobbyName|${if(pin.isNotBlank()) 1 else 0}|$currentSessionId|${if(isMediaLobby) 1 else 0}|${if(isBidirectional) 1 else 0}"
 
         wifiAwareManager.attach(object : AttachCallback() {
             override fun onAttached(session: WifiAwareSession) {
@@ -100,7 +104,7 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
     }
 
     @SuppressLint("MissingPermission")
-    override fun discoverLobbies(onLobbyFound: (String, Boolean, String) -> Unit) {
+    override fun discoverLobbies(onLobbyFound: (String, Boolean, Boolean, Boolean, String) -> Unit) {
         if (wifiAwareManager == null || !wifiAwareManager.isAvailable) return
 
         wifiAwareManager.attach(object : AttachCallback() {
@@ -120,11 +124,19 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
                     override fun onServiceDiscovered(peerHandle: PeerHandle, serviceSpecificInfo: ByteArray, matchFilter: List<ByteArray>) {
                         val infoString = String(serviceSpecificInfo)
                         val parts = infoString.split("|")
-                        if (parts.size >= 2) {
+                        if (parts.size >= 5) {
+                            val lobbyName = parts[0]
+                            val isProtected = parts[1] == "1"
+                            val isMedia = parts[3] == "1"
+                            val isBidi = parts[4] == "1"
+                            Log.d("NanImpl", "Lobby Discovered: $lobbyName (Protected: $isProtected, Media: $isMedia)")
+                            onLobbyFound(lobbyName, isProtected, isMedia, isBidi, infoString)
+                        } else if (parts.size >= 3) {
+                            // Backwards compatibility
                             val lobbyName = parts[0]
                             val isProtected = parts[1] == "1"
                             Log.d("NanImpl", "Lobby Discovered: $lobbyName (Protected: $isProtected)")
-                            onLobbyFound(lobbyName, isProtected, infoString)
+                            onLobbyFound(lobbyName, isProtected, false, false, infoString)
                         }
                     }
                 }, Handler(Looper.getMainLooper()))
@@ -134,7 +146,8 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
     }
 
     @SuppressLint("MissingPermission")
-    override suspend fun joinLobby(payload: String): Boolean = suspendCancellableCoroutine { continuation ->
+    override suspend fun joinLobby(payload: String, pin: String): Boolean = suspendCancellableCoroutine { continuation ->
+        stop()
         if (wifiAwareManager == null) {
             continuation.resumeWithException(Exception("Wi-Fi Aware not supported"))
             return@suspendCancellableCoroutine
@@ -146,6 +159,7 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
         }
 
         val targetServiceInfo = payload.removePrefix("PROXI:NAN:S:")
+        currentPin = pin
 
         subscribeSession?.close()
         
@@ -188,9 +202,11 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
 
     @SuppressLint("MissingPermission")
     private fun acceptPeerConnection(peerHandle: PeerHandle) {
-        val networkSpecifier = WifiAwareNetworkSpecifier.Builder(publishSession!!, peerHandle)
-            .setPmk("ProxiTapSecureKey123".toByteArray())
-            .build()
+        val builder = WifiAwareNetworkSpecifier.Builder(publishSession!!, peerHandle)
+        if (currentPin.isNotBlank()) {
+            builder.setPmk(currentPin.padEnd(32, '0').take(32).toByteArray())
+        }
+        val networkSpecifier = builder.build()
 
         val networkRequest = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI_AWARE)
@@ -210,9 +226,11 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
 
     @SuppressLint("MissingPermission")
     private fun requestDataPathAsPeer(peerHandle: PeerHandle, continuation: kotlinx.coroutines.CancellableContinuation<Boolean>) {
-        val networkSpecifier = WifiAwareNetworkSpecifier.Builder(subscribeSession!!, peerHandle)
-            .setPmk("ProxiTapSecureKey123".toByteArray())
-            .build()
+        val builder = WifiAwareNetworkSpecifier.Builder(subscribeSession!!, peerHandle)
+        if (currentPin.isNotBlank()) {
+            builder.setPmk(currentPin.padEnd(32, '0').take(32).toByteArray())
+        }
+        val networkSpecifier = builder.build()
 
         val networkRequest = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI_AWARE)
@@ -220,12 +238,25 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
             .build()
 
         val callback = object : ConnectivityManager.NetworkCallback() {
+            var isAvailable = false
+            var hasIpv6 = false
+
+            private fun checkAndResume() {
+                if (isAvailable && hasIpv6) {
+                    if (continuation.isActive) {
+                        continuation.resume(true)
+                    }
+                }
+            }
+
             override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
                 super.onCapabilitiesChanged(network, networkCapabilities)
                 val awareInfo = networkCapabilities.transportInfo as? WifiAwareNetworkInfo
                 awareInfo?.peerIpv6Addr?.let { ipv6 ->
                     localHostIpv6 = ipv6.hostAddress
                     Log.d("NanImpl", "Host IPv6 Discovered: $localHostIpv6")
+                    hasIpv6 = true
+                    checkAndResume()
                 }
             }
 
@@ -233,14 +264,24 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
                 Log.d("NanImpl", "Peer Data Path Established!")
                 connectivityManager.bindProcessToNetwork(network)
                 _connectedPeers.value = _connectedPeers.value + peerHandle
-                if (continuation.isActive) {
-                    continuation.resume(true)
-                }
+                isAvailable = true
+                checkAndResume()
             }
 
             override fun onLost(network: Network) {
                 super.onLost(network)
-                Log.w("NanImpl", "Peer Data Path LOST. Entering Reconnect State...")
+                Log.w("NanImpl", "Peer Data Path LOST.")
+                if (continuation.isActive) {
+                    continuation.resume(false)
+                }
+            }
+
+            override fun onUnavailable() {
+                super.onUnavailable()
+                Log.e("NanImpl", "Peer Data Path UNAVAILABLE.")
+                if (continuation.isActive) {
+                    continuation.resume(false)
+                }
             }
         }
         connectivityManager.requestNetwork(networkRequest, callback)

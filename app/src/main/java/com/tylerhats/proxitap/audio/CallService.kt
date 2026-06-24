@@ -14,6 +14,7 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.content.pm.ServiceInfo
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.tylerhats.proxitap.signaling.SignalingClient
@@ -49,6 +50,9 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
     
     private val _distanceMeters = MutableStateFlow<Float?>(null)
     val distanceMeters: StateFlow<Float?> = _distanceMeters
+
+    private val _participants = MutableStateFlow<List<String>>(emptyList())
+    val participants: StateFlow<List<String>> = _participants
 
     private val _isMuted = MutableStateFlow(false)
     val isMuted: StateFlow<Boolean> = _isMuted
@@ -93,10 +97,6 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             isAcousticEchoCancellationEnabled = aecEnabled
             opusDtxEnabled = opusDtx
             opusBitrateBps = opusBitrate
-        }
-        
-        webRtcClient.startAudioLevelMonitoring { speaking ->
-            _isSpeaking.value = speaking
         }
         
         hardwarePttManager = HardwarePttManager(this) { muted ->
@@ -148,7 +148,7 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             Log.d("CallService", "Received ACTION_END_CALL from Notification")
             // Send broadcast to let MainActivity know the call ended
             sendBroadcast(Intent("com.tylerhats.proxitap.CALL_ENDED"))
-            stopSelf()
+            endCall()
             return START_NOT_STICKY
         }
 
@@ -176,18 +176,31 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                             }
                         }
                     }
-                } else if (!isMediaLobby && !webRtcClient.hasPeerConnection("DUMMY")) {
-                    // Only init WebRTC tracks if it's not a media lobby and hasn't been initialized
-                    try {
-                        webRtcClient.initWebRtcAndTracks()
-                    } catch (e: Exception) {
-                        Log.e("CallService", "Error initializing WebRTC", e)
+                    webRtcClient.startAudioLevelMonitoring { speaking ->
+                        _isSpeaking.value = speaking
                     }
                 }
             }
         }
 
-        startForeground(1, createNotification())
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val type = if (isMediaLobby) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            } else {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            }
+            startForeground(1, createNotification(), type)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val type = if (isMediaLobby) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            } else {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            }
+            startForeground(1, createNotification(), type)
+        } else {
+            startForeground(1, createNotification())
+        }
+
         return START_NOT_STICKY
     }
 
@@ -237,6 +250,20 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
     }
 
     fun startHostSignaling(port: Int = 8080) {
+        if (signalingServer != null) {
+            Log.d("CallService", "Signaling Server already running")
+            return
+        }
+        if (!isMediaLobby) {
+            try {
+                if (!webRtcClient.hasWebRtcInitialized()) {
+                    webRtcClient.initWebRtcAndTracks()
+                }
+            } catch (e: Exception) {
+                Log.e("CallService", "Error initializing WebRTC", e)
+            }
+        }
+
         signalingServer = SignalingServer()
         signalingServer?.startServer(port)
 
@@ -270,15 +297,32 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                         }
                     }
 
-                    if (webRtcClient.hasPeerConnection(senderId)) {
-                        Log.d("CallService", "Peer $senderId already exists. Triggering ICE Restart.")
-                        webRtcClient.triggerIceRestart(senderId, signalingCallback)
+                    if (!isMediaLobby) {
+                        if (webRtcClient.hasPeerConnection(senderId)) {
+                            Log.d("CallService", "Peer $senderId already exists. Triggering ICE Restart.")
+                            webRtcClient.triggerIceRestart(senderId, signalingCallback)
+                        } else {
+                            webRtcClient.createPeerConnection(senderId, signalingCallback)
+                            // In a star topology, Host acts as SFU. It sends an offer to the new peer.
+                            webRtcClient.createOffer(senderId, signalingCallback)
+                        }
                     } else {
-                        webRtcClient.createPeerConnection(senderId, signalingCallback)
-                        // In a star topology, Host acts as SFU. It sends an offer to the new peer.
-                        webRtcClient.createOffer(senderId, signalingCallback)
+                        Log.d("CallService", "Media Lobby: Skipping WebRTC for $senderId")
                     }
                 } 
+                else if (type == "PARTICIPANTS_UPDATE") {
+                    val array = json.getJSONArray("participants")
+                    val list = mutableListOf<String>()
+                    val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
+                    val hostName = prefs.getString("display_name", Build.MODEL) ?: Build.MODEL
+                    list.add("$hostName (Host)")
+                    
+                    for (i in 0 until array.length()) {
+                        val p = array.getJSONObject(i)
+                        list.add(p.getString("name"))
+                    }
+                    _participants.value = list
+                }
                 else if (type == "ANSWER") {
                     webRtcClient.handleRemoteAnswer(senderId, json.getString("sdp"))
                 }
@@ -305,8 +349,24 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
     }
 
     fun startPeerSignaling(hostIp: String, port: Int = 8080) {
+        if (signalingClient != null) {
+            Log.d("CallService", "Signaling Client already running")
+            return
+        }
+        if (!isMediaLobby) {
+            try {
+                if (!webRtcClient.hasWebRtcInitialized()) {
+                    webRtcClient.initWebRtcAndTracks()
+                }
+            } catch (e: Exception) {
+                Log.e("CallService", "Error initializing WebRTC", e)
+            }
+        }
+
+        val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
+        val deviceName = prefs.getString("display_name", Build.MODEL) ?: Build.MODEL
         signalingClient = SignalingClient(hostIp, port)
-        signalingClient?.connect(myPeerId)
+        signalingClient?.connect(myPeerId, deviceName)
 
         val signalingCallback = object : WebRtcClient.SignalingCallback {
             override fun onOfferCreated(peerId: String, sdp: String) {}
@@ -335,11 +395,33 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         scope.launch {
             signalingClient?.incomingMessages?.collect { json ->
                 val type = json.getString("type")
+                if (type == "SESSION_CLOSED") {
+                    Log.d("CallService", "Host closed the session. Ending call.")
+                    sendBroadcast(Intent("com.tylerhats.proxitap.CALL_ENDED"))
+                    endCall()
+                    return@collect
+                }
+                
                 if (json.has("target") && json.getString("target") != myPeerId) return@collect
 
                 val senderId = "HOST" // Peers only connect directly to host in SFU
 
-                if (type == "OFFER") {
+                if (type == "PARTICIPANTS_UPDATE") {
+                    val array = json.getJSONArray("participants")
+                    val list = mutableListOf<String>()
+                    for (i in 0 until array.length()) {
+                        val p = array.getJSONObject(i)
+                        val name = p.getString("name")
+                        val id = p.getString("id")
+                        if (id == myPeerId) list.add("$name (You)") else list.add(name)
+                    }
+                    val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
+                    val hostName = prefs.getString("host_display_name", "Host")
+                    // Wait, we don't have host display name reliably on peer unless host sends it
+                    list.add(0, "Host")
+                    _participants.value = list
+                }
+                else if (type == "OFFER") {
                     if (!webRtcClient.hasPeerConnection(senderId)) {
                         webRtcClient.createPeerConnection(senderId, signalingCallback)
                     } else {
@@ -367,8 +449,8 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         }
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
+    fun endCall() {
+        Log.d("CallService", "Ending call and cleaning up resources")
         val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
         prefs.unregisterOnSharedPreferenceChangeListener(this)
         
@@ -382,7 +464,14 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         }
         wakeLock = null
 
-        pttReceiver?.let { unregisterReceiver(it) }
+        pttReceiver?.let { 
+            try {
+                unregisterReceiver(it)
+            } catch (e: Exception) {
+                // Ignore if not registered
+            }
+        }
+        pttReceiver = null
 
         scope.cancel()
         webRtcClient.dispose()
@@ -397,7 +486,23 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             audioManager.stopBluetoothSco()
             audioManager.isBluetoothScoOn = false
         }
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
+        stopSelf()
     }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        Log.d("CallService", "Service Destroyed")
+        // Just in case endCall wasn't called
+        endCall()
+    }
+
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

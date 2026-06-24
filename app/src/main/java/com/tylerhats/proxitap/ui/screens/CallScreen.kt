@@ -21,9 +21,12 @@ fun CallScreen(
     isSpeaking: Boolean = false,
     distanceMeters: Float? = null,
     isReconnecting: Boolean = false,
+    isMediaLobby: Boolean = false,
+    participants: List<String> = emptyList(),
     onMuteToggle: () -> Unit,
     onEndCallClick: () -> Unit,
-    onSettingsClick: () -> Unit
+    onSettingsClick: () -> Unit,
+    onShowQrCodeClick: (() -> Unit)? = null
 ) {
     val infiniteTransition = rememberInfiniteTransition()
     val ringScale by infiniteTransition.animateFloat(
@@ -59,8 +62,15 @@ fun CallScreen(
                 text = if (isHost) "Host Lobby" else "Connected",
                 style = MaterialTheme.typography.titleLarge
             )
-            FilledTonalButton(onClick = onSettingsClick, modifier = Modifier.height(48.dp)) {
-                Text("Settings")
+            Row {
+                if (isHost && onShowQrCodeClick != null) {
+                    IconButton(onClick = onShowQrCodeClick) {
+                        Text("QR")
+                    }
+                }
+                IconButton(onClick = onSettingsClick) {
+                    Text("⚙️")
+                }
             }
         }
         
@@ -88,6 +98,12 @@ fun CallScreen(
             ) {
                 if (isReconnecting) {
                     CircularProgressIndicator(color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else if (isMediaLobby) {
+                    Text(
+                        text = "MEDIA", 
+                        style = MaterialTheme.typography.displayMedium,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
                 } else {
                     Text(
                         text = "PT", 
@@ -100,7 +116,7 @@ fun CallScreen(
         
         Spacer(modifier = Modifier.height(32.dp))
         Text(
-            text = if (isReconnecting) "Reconnecting..." else "Voice Active", 
+            text = if (isReconnecting) "Reconnecting..." else if (isMediaLobby) "Media Broadcasting Active" else "Voice Active", 
             style = MaterialTheme.typography.bodyLarge,
             color = if (isReconnecting) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.secondary
         )
@@ -114,6 +130,28 @@ fun CallScreen(
             )
         }
         
+        if (participants.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Text("Participants", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(8.dp))
+            androidx.compose.foundation.lazy.LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth(0.8f)
+                    .heightIn(max = 150.dp)
+                    .background(MaterialTheme.colorScheme.surfaceVariant, shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                    .padding(8.dp)
+            ) {
+                items(participants.size) { index ->
+                    Text(
+                        text = "• ${participants[index]}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+                }
+            }
+        }
+        
         Spacer(modifier = Modifier.weight(1f))
         
         Row(
@@ -122,12 +160,14 @@ fun CallScreen(
                 .padding(bottom = 32.dp),
             horizontalArrangement = Arrangement.SpaceEvenly
         ) {
-            FloatingActionButton(
-                onClick = onMuteToggle,
-                modifier = Modifier.size(80.dp),
-                containerColor = if (isMuted) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant
-            ) {
-                Text(if (isMuted) "Unmute" else "Mute")
+            if (!isMediaLobby) {
+                FloatingActionButton(
+                    onClick = onMuteToggle,
+                    modifier = Modifier.size(80.dp),
+                    containerColor = if (isMuted) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceVariant
+                ) {
+                    Text(if (isMuted) "Unmute" else "Mute")
+                }
             }
             
             FloatingActionButton(

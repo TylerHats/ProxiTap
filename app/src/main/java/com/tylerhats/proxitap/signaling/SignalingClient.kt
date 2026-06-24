@@ -40,12 +40,12 @@ class SignalingClient(private val hostIp: String, private val port: Int = 8080) 
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
-    fun connect(myPeerId: String) {
+    fun connect(myPeerId: String, deviceName: String) {
         isIntentionallyDisconnected = false
-        startReconnectLoop(myPeerId)
+        startReconnectLoop(myPeerId, deviceName)
     }
 
-    private fun startReconnectLoop(myPeerId: String) {
+    private fun startReconnectLoop(myPeerId: String, deviceName: String) {
         connectionScope?.cancel()
         connectionScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -63,13 +63,23 @@ class SignalingClient(private val hostIp: String, private val port: Int = 8080) 
                         val joinMsg = JSONObject().apply {
                             put("type", "JOIN")
                             put("peerId", myPeerId)
+                            put("deviceName", deviceName)
                         }
                         send(Frame.Text(joinMsg.toString()))
 
                         incoming.consumeEach { frame ->
                             if (frame is Frame.Text) {
-                                val message = frame.readText()
-                                _incomingMessages.emit(JSONObject(message))
+                                val text = frame.readText()
+                                Log.d("SignalingClient", "Received message: $text")
+                                val json = JSONObject(text)
+                                if (json.optString("type") == "SESSION_CLOSED") {
+                                    Log.d("SignalingClient", "Host closed the session. Disconnecting intentionally.")
+                                    isIntentionallyDisconnected = true
+                                    _incomingMessages.tryEmit(json)
+                                    session?.close(CloseReason(CloseReason.Codes.NORMAL, "Host closed session"))
+                                    return@consumeEach
+                                }
+                                _incomingMessages.tryEmit(json)
                             } else if (frame is Frame.Binary) {
                                 val bytes = frame.readBytes()
                                 _incomingAudio.emit(bytes)

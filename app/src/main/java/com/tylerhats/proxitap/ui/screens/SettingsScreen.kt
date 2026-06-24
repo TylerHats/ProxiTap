@@ -13,6 +13,7 @@ import androidx.compose.ui.platform.LocalContext
 
 @Composable
 fun SettingsScreen(
+    isMediaLobby: Boolean = false,
     onBackClick: () -> Unit
 ) {
     val context = LocalContext.current
@@ -27,12 +28,41 @@ fun SettingsScreen(
     
     var opusDtx by remember { mutableStateOf(prefs.getBoolean("opus_dtx", true)) }
     var opusBitrate by remember { mutableStateOf(prefs.getInt("opus_bitrate", 64000).toFloat()) }
+    var displayName by remember { mutableStateOf(prefs.getString("display_name", android.os.Build.MODEL) ?: android.os.Build.MODEL) }
 
     Column(
         modifier = Modifier.fillMaxSize().systemBarsPadding().padding(16.dp)
     ) {
-        Text("Audio Settings", style = MaterialTheme.typography.headlineMedium)
+        Text("Profile & Settings", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(24.dp))
+        
+        OutlinedTextField(
+            value = displayName,
+            onValueChange = { 
+                displayName = it
+                prefs.edit().putString("display_name", it).apply()
+            },
+            label = { Text("Display Name") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        if (isMediaLobby) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+            ) {
+                Text(
+                    text = "Media Lobby Active: Audio processing is completely bypassed to stream your device's raw uncompressed audio for maximum quality. Standard WebRTC audio settings are hidden.",
+                    modifier = Modifier.padding(16.dp),
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        } else {
+            Text("Audio Settings", style = MaterialTheme.typography.titleMedium)
+            Spacer(modifier = Modifier.height(16.dp))
         
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -169,32 +199,33 @@ fun SettingsScreen(
                     prefs.edit().putBoolean("volume_ptt", false).apply()
                 }
             })
+            
+            if (showVolumePttDialog) {
+                AlertDialog(
+                    onDismissRequest = { showVolumePttDialog = false },
+                    title = { Text("Accessibility Permission Required") },
+                    text = { 
+                        Text("To intercept the physical volume buttons while the screen is locked, ProxiTap requires an Accessibility Service.\n\nYou will be redirected to Android Settings. Please find 'ProxiTap' in the Accessibility menu and enable it.") 
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            showVolumePttDialog = false
+                            volumePtt = true
+                            prefs.edit().putBoolean("volume_ptt", true).apply()
+                            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                            context.startActivity(intent)
+                        }) {
+                            Text("Open Settings")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showVolumePttDialog = false }) {
+                            Text("Cancel")
+                        }
+                    }
+                )
+            }
         }
-        
-        if (showVolumePttDialog) {
-            AlertDialog(
-                onDismissRequest = { showVolumePttDialog = false },
-                title = { Text("Accessibility Permission Required") },
-                text = { 
-                    Text("To intercept the physical volume buttons while the screen is locked, ProxiTap requires an Accessibility Service.\n\nYou will be redirected to Android Settings. Please find 'ProxiTap' in the Accessibility menu and enable it.") 
-                },
-                confirmButton = {
-                    TextButton(onClick = {
-                        showVolumePttDialog = false
-                        volumePtt = true
-                        prefs.edit().putBoolean("volume_ptt", true).apply()
-                        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                        context.startActivity(intent)
-                    }) {
-                        Text("Open Settings")
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showVolumePttDialog = false }) {
-                        Text("Cancel")
-                    }
-                }
-            )
         }
         
         Spacer(modifier = Modifier.weight(1f))

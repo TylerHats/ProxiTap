@@ -9,6 +9,7 @@ import io.ktor.websocket.*
 import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.runBlocking
 import java.time.Duration
 import io.ktor.server.cio.CIO
 import org.json.JSONObject
@@ -19,6 +20,8 @@ class SignalingServer {
     
     // peerId to WebSocketSession
     private val sessions = ConcurrentHashMap<String, DefaultWebSocketServerSession>()
+    // peerId to deviceName
+    private val participantNames = ConcurrentHashMap<String, String>()
 
     // For the Host to listen to incoming messages from Peers
     private val _incomingMessages = MutableSharedFlow<Pair<String, JSONObject>>(extraBufferCapacity = 64)
@@ -26,6 +29,23 @@ class SignalingServer {
     
     private val _incomingAudio = MutableSharedFlow<Pair<String, ByteArray>>(extraBufferCapacity = 64)
     val incomingAudio = _incomingAudio.asSharedFlow()
+
+    private suspend fun broadcastParticipants() {
+        val participantsList = org.json.JSONArray()
+        participantNames.forEach { (id, name) ->
+            val p = JSONObject()
+            p.put("id", id)
+            p.put("name", name)
+            participantsList.put(p)
+        }
+        val msg = JSONObject()
+        msg.put("type", "PARTICIPANTS_UPDATE")
+        msg.put("participants", participantsList)
+        
+        val msgString = msg.toString()
+        sessions.values.forEach { it.send(Frame.Text(msgString)) }
+        _incomingMessages.tryEmit(Pair("HOST", msg))
+    }
 
     fun startServer(port: Int = 8080) {
         Log.d("SignalingServer", "Starting Ktor WebSocket server on port $port")
@@ -52,7 +72,10 @@ class SignalingServer {
                                     
                                     if (type == "JOIN") {
                                         currentPeerId = json.getString("peerId")
+                                        val deviceName = if (json.has("deviceName")) json.getString("deviceName") else "Unknown Device"
                                         sessions[currentPeerId!!] = this
+                                        participantNames[currentPeerId!!] = deviceName
+                                        broadcastParticipants()
                                     }
                                     
                                     if (currentPeerId != null) {
@@ -83,7 +106,11 @@ class SignalingServer {
                             Log.e("SignalingServer", "Error in WebSocket connection: ${e.message}")
                         } finally {
                             Log.d("SignalingServer", "Client $currentPeerId disconnected")
-                            currentPeerId?.let { sessions.remove(it) }
+                            currentPeerId?.let { 
+                                sessions.remove(it)
+                                participantNames.remove(it)
+                                broadcastParticipants()
+                            }
                         }
                     }
                 }
@@ -103,8 +130,16 @@ class SignalingServer {
 
     fun stopServer() {
         Log.d("SignalingServer", "Stopping Ktor WebSocket server")
+        // Broadcast SESSION_CLOSED to all peers before stopping
+        val msg = JSONObject().apply { put("type", "SESSION_CLOSED") }.toString()
+        runBlocking {
+            sessions.values.forEach { 
+                try { it.send(Frame.Text(msg)) } catch (e: Exception) {} 
+            }
+        }
         server?.stop(1000, 2000)
         server = null
         sessions.clear()
+        participantNames.clear()
     }
 }

@@ -42,7 +42,9 @@ fun LobbyScreen(
     var qrBitmap by remember { mutableStateOf<Bitmap?>(null) }
     
     LaunchedEffect(qrPayload) {
-        qrBitmap = generateQrCode(qrPayload, 500)
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            qrBitmap = generateQrCode(qrPayload, 500)
+        }
     }
 
     Column(

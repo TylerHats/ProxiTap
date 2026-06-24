@@ -44,6 +44,7 @@ fun ProxiTapApp() {
     val context = androidx.compose.ui.platform.LocalContext.current
     val navController = rememberNavController()
     var isHost by remember { mutableStateOf(false) }
+    var hostQrPayload by remember { mutableStateOf<String?>(null) }
     
     val nanImpl = remember { com.tylerhats.proxitap.network.NanImpl(context) }
     val hotspotImpl = remember { com.tylerhats.proxitap.network.HotspotImpl(context) }
@@ -55,6 +56,7 @@ fun ProxiTapApp() {
     )
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         permissionsToRequest.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+        permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
     }
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         permissionsToRequest.add(Manifest.permission.BLUETOOTH_CONNECT)
@@ -149,10 +151,10 @@ fun ProxiTapApp() {
                 onSearchAreaClick = {
                     isHost = false
                     discoveredLobbies.clear()
-                    nanImpl.discoverLobbies { name, isProtected, payload ->
+                    nanImpl.discoverLobbies { name, isProtected, isMedia, isBidi, payload ->
                         // Prevent duplicates
                         if (discoveredLobbies.none { it.name == name }) {
-                            discoveredLobbies.add(DiscoveredLobby(name, isProtected, payload))
+                            discoveredLobbies.add(DiscoveredLobby(name, isProtected, isMedia, isBidi, payload))
                         }
                     }
                     navController.navigate("serverList")
@@ -162,11 +164,15 @@ fun ProxiTapApp() {
         composable("serverList") {
             ServerListScreen(
                 discoveredLobbies = discoveredLobbies,
-                onLobbyClick = { lobby ->
-                    // Pass the full payload to the CallScreen route
-                    navController.navigate("call?mode=nan&service=${lobby.payload}&pin=")
+                onLobbyClick = { lobby, pinInput ->
+                    val encoded = java.net.URLEncoder.encode(lobby.payload, "UTF-8")
+                    // Now we pass the media flags down so it doesn't default to standard
+                    navController.navigate("call?mode=nan&service=$encoded&media=${lobby.isMedia}&bidi=${lobby.isBidi}&pin=$pinInput")
                 },
-                onBackClick = { navController.popBackStack() }
+                onBackClick = {
+                    nanImpl.stop()
+                    navController.popBackStack()
+                }
             )
         }
         composable(
@@ -194,7 +200,7 @@ fun ProxiTapApp() {
             
             LaunchedEffect(name, pin) {
                 try {
-                    servicePayload = activeManager.startHosting(name, pin.isNotBlank())
+                    servicePayload = activeManager.startHosting(name, pin, isMediaLobby, isBidirectional)
                     hostNetworkReady = true
                 } catch (e: Exception) {
                     android.util.Log.e("MainActivity", "Failed to start hosting", e)
@@ -216,9 +222,12 @@ fun ProxiTapApp() {
             }
 
             if (servicePayload != null) {
-                val cleanPayload = servicePayload!!.removePrefix("PROXI:NAN:S:").removePrefix("PROXI:HOTSPOT:S:")
+                val cleanPayload = servicePayload!!.removePrefix("PROXI:NAN:S:").removePrefix("WIFI:T:WPA;S:")
+                val encodedPayload = java.net.URLEncoder.encode(cleanPayload, "UTF-8")
+                val finalPayload = "https://pt.htsth.app/join?mode=$modeStr&radar=$enableRadar&service=$encodedPayload&media=$isMediaLobby&bidi=$isBidirectional"
+                hostQrPayload = finalPayload
                 LobbyScreen(
-                    qrPayload = "https://pt.htsth.app/join?mode=$modeStr&radar=$enableRadar&service=$cleanPayload&media=$isMediaLobby&bidi=$isBidirectional",
+                    qrPayload = finalPayload,
                     onStartCallClick = { 
                         navController.navigate("call?mode=$modeStr&radar=$enableRadar&media=$isMediaLobby&bidi=$isBidirectional") 
                     }
@@ -235,9 +244,22 @@ fun ProxiTapApp() {
         composable("scanner") {
             ScannerScreen(
                 onQrCodeScanned = { url -> 
-                    navController.navigate("call") 
+                    // Use Uri.parse to properly trigger the deep link resolution
+                    try {
+                        val uri = android.net.Uri.parse(url)
+                        navController.navigate(uri)
+                    } catch (e: Exception) {
+                        android.util.Log.e("MainActivity", "Failed to parse QR URL", e)
+                    }
                 },
                 onCancelClick = { navController.popBackStack() }
+            )
+        }
+        composable("qr?payload={payload}") { backStackEntry ->
+            val payload = backStackEntry.arguments?.getString("payload")
+            LobbyScreen(
+                qrPayload = payload ?: "",
+                onStartCallClick = { navController.popBackStack() }
             )
         }
         composable(
@@ -249,6 +271,7 @@ fun ProxiTapApp() {
             val enableRadar = backStackEntry.arguments?.getString("radar") == "true"
             val isMediaLobby = backStackEntry.arguments?.getString("media") == "true"
             val isBidirectional = backStackEntry.arguments?.getString("bidi") == "true"
+            val pin = backStackEntry.arguments?.getString("pin") ?: ""
             val activeManager = getNetworkManager(mode)
             
             val isDeepLinkJoin = service != null
@@ -262,7 +285,7 @@ fun ProxiTapApp() {
                         try {
                             val prefix = if (mode == "hotspot") "WIFI:T:WPA;S:" else "PROXI:NAN:S:"
                             val payload = "$prefix$service"
-                            activeManager.joinLobby(payload)
+                            activeManager.joinLobby(payload, pin)
                             
                             val intent = android.content.Intent(context, com.tylerhats.proxitap.audio.CallService::class.java)
                             intent.putExtra("isMediaLobby", isMediaLobby)
@@ -341,6 +364,7 @@ fun ProxiTapApp() {
 
             val isSpeaking by callService?.isSpeaking?.collectAsState() ?: remember { mutableStateOf(false) }
             val isMuted by callService?.isMuted?.collectAsState() ?: remember { mutableStateOf(false) }
+            val participants by callService?.participants?.collectAsState() ?: remember { mutableStateOf(emptyList()) }
 
             CallScreen(
                 isHost = isHost,
@@ -348,22 +372,35 @@ fun ProxiTapApp() {
                 isSpeaking = isSpeaking,
                 distanceMeters = currentDistanceMeters,
                 isReconnecting = isReconnecting,
+                isMediaLobby = isMediaLobby,
+                participants = participants,
                 onMuteToggle = { callService?.toggleMute() },
                 onEndCallClick = { 
                     nanImpl.stop()
                     hotspotImpl.stop()
                     distanceTracker.stopTracking()
-                    val intent = android.content.Intent(context, com.tylerhats.proxitap.audio.CallService::class.java)
-                    context.stopService(intent)
+                    callService?.endCall()
                     navController.navigate("home") {
                         popUpTo("home") { inclusive = true }
                     }
                 },
-                onSettingsClick = { navController.navigate("settings") }
+                onSettingsClick = { navController.navigate("settings?media=$isMediaLobby") },
+                onShowQrCodeClick = { 
+                    hostQrPayload?.let { payload ->
+                        navController.navigate("qr?payload=${java.net.URLEncoder.encode(payload, "UTF-8")}")
+                    }
+                }
             )
         }
-        composable("settings") {
+        composable(
+            route = "settings?media={media}",
+            arguments = listOf(
+                androidx.navigation.navArgument("media") { defaultValue = "false" }
+            )
+        ) { backStackEntry ->
+            val isMediaRoute = backStackEntry.arguments?.getString("media") == "true"
             SettingsScreen(
+                isMediaLobby = isMediaRoute,
                 onBackClick = { navController.popBackStack() }
             )
         }

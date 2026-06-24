@@ -25,6 +25,10 @@ class WebRtcClient(private val context: Context) {
     var opusDtxEnabled: Boolean = true
     var opusBitrateBps: Int = 64000
 
+    fun hasWebRtcInitialized(): Boolean {
+        return peerConnectionFactory != null
+    }
+
     fun initWebRtcAndTracks() {
         initWebRtc()
         createLocalAudioTrack()
@@ -218,9 +222,9 @@ class WebRtcClient(private val context: Context) {
             override fun run() {
                 var isAnySpeaking = false
                 
-                // If there are no peers connected, we fallback to a mock for UI testing
+                // If there are no peers connected, nobody is speaking
                 if (peerConnections.isEmpty()) {
-                    onSpeakingChanged(Math.random() > 0.8)
+                    onSpeakingChanged(false)
                     return
                 }
 
@@ -244,11 +248,17 @@ class WebRtcClient(private val context: Context) {
 
     fun dispose() {
         audioLevelTimer?.cancel()
-        peerConnections.values.forEach { it.dispose() }
+        peerConnections.values.forEach { 
+            try { it.dispose() } catch (e: Exception) { Log.e("WebRtcClient", "Error disposing peer connection", e) } 
+        }
         peerConnections.clear()
-        localAudioTrack?.dispose()
-        localAudioSource?.dispose()
-        peerConnectionFactory?.dispose()
-        rootEglBase?.release()
+        try { localAudioTrack?.dispose() } catch (e: Exception) {}
+        localAudioTrack = null
+        try { localAudioSource?.dispose() } catch (e: Exception) {}
+        localAudioSource = null
+        try { peerConnectionFactory?.dispose() } catch (e: Exception) {}
+        peerConnectionFactory = null
+        try { rootEglBase?.release() } catch (e: Exception) {}
+        rootEglBase = null
     }
 }
