@@ -87,8 +87,8 @@ class WebRtcClient(private val context: Context) {
         return peerConnections.containsKey(peerId)
     }
 
-    fun createPeerConnection(peerId: String, signalingCallback: SignalingCallback) {
-        Log.d("WebRtcClient", "Creating PeerConnection for $peerId")
+    fun createPeerConnection(peerId: String, isHost: Boolean, signalingCallback: SignalingCallback) {
+        Log.d("WebRtcClient", "Creating PeerConnection for $peerId (isHost=$isHost)")
         if (peerConnectionFactory == null) return
 
         // Empty ICE servers because we are on a local network (NAN/Hotspot)
@@ -121,8 +121,10 @@ class WebRtcClient(private val context: Context) {
         val pc = peerConnectionFactory!!.createPeerConnection(rtcConfig, pcObserver)
         if (pc != null) {
             peerConnections[peerId] = pc
-            localAudioTrack?.let {
-                pc.addTransceiver(it, RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_RECV))
+            if (isHost) {
+                localAudioTrack?.let {
+                    pc.addTransceiver(it, RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_RECV))
+                }
             }
         }
     }
@@ -176,6 +178,16 @@ class WebRtcClient(private val context: Context) {
         pc.setRemoteDescription(object : SdpObserver {
             override fun onCreateSuccess(p0: SessionDescription?) {}
             override fun onSetSuccess() {
+                // Configure local audio track on the transceiver to enable outgoing audio
+                for (transceiver in pc.transceivers) {
+                    if (transceiver.mediaType == MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO) {
+                        transceiver.setDirection(RtpTransceiver.RtpTransceiverDirection.SEND_RECV)
+                        localAudioTrack?.let { track ->
+                            transceiver.sender.setTrack(track, false)
+                        }
+                    }
+                }
+
                 // Once remote description is set, create the answer
                 pc.createAnswer(object : SdpObserver {
                     override fun onCreateSuccess(answerSdp: SessionDescription?) {
@@ -247,18 +259,55 @@ class WebRtcClient(private val context: Context) {
     }
 
     fun dispose() {
-        audioLevelTimer?.cancel()
-        peerConnections.values.forEach { 
-            try { it.dispose() } catch (e: Exception) { Log.e("WebRtcClient", "Error disposing peer connection", e) } 
+        Log.d("WebRtcClient", "Disposing WebRTC Client")
+        for (pc in peerConnections.values) {
+            try {
+                pc.close()
+                pc.dispose()
+            } catch (e: Exception) { Log.e("WebRtcClient", "Failed to dispose PC", e) }
         }
         peerConnections.clear()
-        try { localAudioTrack?.dispose() } catch (e: Exception) {}
+        
+        try { localAudioTrack?.dispose() } catch (e: Exception) { Log.e("WebRtcClient", "Failed to dispose localAudioTrack", e) }
         localAudioTrack = null
-        try { localAudioSource?.dispose() } catch (e: Exception) {}
+        
+        try { localAudioSource?.dispose() } catch (e: Exception) { Log.e("WebRtcClient", "Failed to dispose localAudioSource", e) }
         localAudioSource = null
-        try { peerConnectionFactory?.dispose() } catch (e: Exception) {}
+        
+        try { peerConnectionFactory?.dispose() } catch (e: Exception) { Log.e("WebRtcClient", "Failed to dispose factory", e) }
         peerConnectionFactory = null
-        try { rootEglBase?.release() } catch (e: Exception) {}
+        
+        try { rootEglBase?.release() } catch (e: Exception) { Log.e("WebRtcClient", "Failed to release rootEglBase", e) }
         rootEglBase = null
+    }
+
+    fun removePeerConnection(peerId: String) {
+        val pc = peerConnections.remove(peerId)
+        pc?.close()
+        pc?.dispose()
+        Log.d("WebRtcClient", "Peer connection removed for $peerId")
+        
+        if (peerConnections.isEmpty()) {
+            Log.d("WebRtcClient", "All peers disconnected. Local audio track remains alive for future connections.")
+        }
+    }
+
+    fun applyAudioSettingsToActiveConnections() {
+        Log.d("WebRtcClient", "Applying settings: Bitrate=$opusBitrateBps DTX=$opusDtxEnabled")
+        for (pc in peerConnections.values) {
+            val senders = pc.senders
+            for (sender in senders) {
+                if (sender.track()?.kind() == "audio") {
+                    val parameters = sender.parameters
+                    if (parameters != null) {
+                        for (encoding in parameters.encodings) {
+                            // Convert bps to kbps? The parameter maxBitrateBps expects bits per second!
+                            encoding.maxBitrateBps = opusBitrateBps
+                        }
+                        sender.parameters = parameters
+                    }
+                }
+            }
+        }
     }
 }

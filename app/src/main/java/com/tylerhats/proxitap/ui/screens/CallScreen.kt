@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -23,6 +24,7 @@ fun CallScreen(
     isReconnecting: Boolean = false,
     isMediaLobby: Boolean = false,
     participants: List<String> = emptyList(),
+    stats: Map<String, String> = emptyMap(),
     onMuteToggle: () -> Unit,
     onEndCallClick: () -> Unit,
     onSettingsClick: () -> Unit,
@@ -152,6 +154,41 @@ fun CallScreen(
             }
         }
         
+        var showStats by remember { mutableStateOf(false) }
+        
+        if (isHost && stats.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(16.dp))
+            OutlinedButton(onClick = { showStats = !showStats }) {
+                Text(if (showStats) "Hide Diagnostics" else "View Diagnostics")
+            }
+            if (showStats) {
+                Spacer(modifier = Modifier.height(8.dp))
+                androidx.compose.foundation.lazy.LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
+                        .background(MaterialTheme.colorScheme.surface, shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                        .padding(12.dp)
+                ) {
+                    items(stats.keys.toList().size) { index ->
+                        val key = stats.keys.toList()[index]
+                        val value = stats[key] ?: ""
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(key, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(value, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        }
+                        if (index < stats.size - 1) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha=0.5f))
+                        }
+                    }
+                }
+            }
+        }
+        
         Spacer(modifier = Modifier.weight(1f))
         
         Row(
@@ -160,6 +197,20 @@ fun CallScreen(
                 .padding(bottom = 32.dp),
             horizontalArrangement = Arrangement.SpaceEvenly
         ) {
+            val context = LocalContext.current
+            val audioManager = context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+            var isSpeakerOn by remember { mutableStateOf(audioManager.isSpeakerphoneOn) }
+
+            FloatingActionButton(
+                onClick = { 
+                    isSpeakerOn = !isSpeakerOn
+                    audioManager.isSpeakerphoneOn = isSpeakerOn
+                },
+                modifier = Modifier.size(80.dp),
+                containerColor = if (isSpeakerOn) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+            ) {
+                Text(if (isSpeakerOn) "Speaker" else "Earpiece")
+            }
             if (!isMediaLobby) {
                 FloatingActionButton(
                     onClick = onMuteToggle,

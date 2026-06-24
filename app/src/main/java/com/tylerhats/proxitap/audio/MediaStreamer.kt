@@ -7,6 +7,7 @@ import android.media.AudioFormat
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
 import android.media.AudioTrack
+import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.os.Build
 import android.util.Log
@@ -23,11 +24,14 @@ class MediaStreamer(private val context: Context) {
     private var isStreaming = false
     
     private val SAMPLE_RATE = 44100
-    private val CHANNEL_CONFIG_IN = AudioFormat.CHANNEL_IN_STEREO
+    private val CHANNEL_CONFIG_IN_MEDIA = AudioFormat.CHANNEL_IN_STEREO
+    private val CHANNEL_CONFIG_IN_MIC = AudioFormat.CHANNEL_IN_MONO
     private val CHANNEL_CONFIG_OUT = AudioFormat.CHANNEL_OUT_STEREO
+    private val CHANNEL_CONFIG_OUT_MONO = AudioFormat.CHANNEL_OUT_MONO
     private val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
     
-    private val bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG_IN, AUDIO_FORMAT) * 2
+    private val bufferSizeMedia = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG_IN_MEDIA, AUDIO_FORMAT) * 2
+    private val bufferSizeMic = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG_IN_MIC, AUDIO_FORMAT) * 2
 
     @SuppressLint("MissingPermission")
     fun startCapture(projection: MediaProjection, onAudioDataReceived: (ByteArray) -> Unit) {
@@ -47,12 +51,12 @@ class MediaStreamer(private val context: Context) {
         val format = AudioFormat.Builder()
             .setEncoding(AUDIO_FORMAT)
             .setSampleRate(SAMPLE_RATE)
-            .setChannelMask(CHANNEL_CONFIG_IN)
+            .setChannelMask(CHANNEL_CONFIG_IN_MEDIA)
             .build()
 
         audioRecord = AudioRecord.Builder()
             .setAudioFormat(format)
-            .setBufferSizeInBytes(bufferSize)
+            .setBufferSizeInBytes(bufferSizeMedia)
             .setAudioPlaybackCaptureConfig(config)
             .build()
 
@@ -60,7 +64,7 @@ class MediaStreamer(private val context: Context) {
         audioRecord?.startRecording()
 
         scope.launch {
-            val buffer = ByteArray(bufferSize)
+            val buffer = ByteArray(bufferSizeMedia)
             while (isActive && isStreaming) {
                 val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
                 if (read > 0) {
@@ -71,22 +75,53 @@ class MediaStreamer(private val context: Context) {
         }
     }
 
-    fun startPlayback() {
+    @SuppressLint("MissingPermission")
+    fun startMicrophoneCapture(onAudioDataReceived: (ByteArray) -> Unit) {
         val format = AudioFormat.Builder()
             .setEncoding(AUDIO_FORMAT)
             .setSampleRate(SAMPLE_RATE)
-            .setChannelMask(CHANNEL_CONFIG_OUT)
+            .setChannelMask(CHANNEL_CONFIG_IN_MIC)
+            .build()
+
+        audioRecord = AudioRecord.Builder()
+            .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+            .setAudioFormat(format)
+            .setBufferSizeInBytes(bufferSizeMic)
+            .build()
+
+        isStreaming = true
+        audioRecord?.startRecording()
+
+        scope.launch {
+            val buffer = ByteArray(bufferSizeMic)
+            while (isActive && isStreaming) {
+                val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
+                if (read > 0) {
+                    val data = buffer.copyOf(read)
+                    onAudioDataReceived(data)
+                }
+            }
+        }
+    }
+
+    fun startPlayback(isMono: Boolean = false) {
+        val format = AudioFormat.Builder()
+            .setEncoding(AUDIO_FORMAT)
+            .setSampleRate(SAMPLE_RATE)
+            .setChannelMask(if (isMono) CHANNEL_CONFIG_OUT_MONO else CHANNEL_CONFIG_OUT)
             .build()
 
         val attributes = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_MEDIA)
-            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+            .setUsage(if (isMono) AudioAttributes.USAGE_VOICE_COMMUNICATION else AudioAttributes.USAGE_MEDIA)
+            .setContentType(if (isMono) AudioAttributes.CONTENT_TYPE_SPEECH else AudioAttributes.CONTENT_TYPE_MUSIC)
             .build()
+            
+        val bufferSizeOut = if (isMono) bufferSizeMic else bufferSizeMedia
 
         audioTrack = AudioTrack.Builder()
             .setAudioAttributes(attributes)
             .setAudioFormat(format)
-            .setBufferSizeInBytes(bufferSize)
+            .setBufferSizeInBytes(bufferSizeOut)
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
 

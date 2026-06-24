@@ -37,9 +37,7 @@
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true"
-        android:theme="@style/Theme.ProxiTap"
-        android:extractNativeLibs="true"
-        tools:replace="android:extractNativeLibs">
+        android:theme="@style/Theme.ProxiTap">
         <activity
             android:name=".MainActivity"
             android:exported="true"

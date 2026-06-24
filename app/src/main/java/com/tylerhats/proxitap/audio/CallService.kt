@@ -25,6 +25,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.util.UUID
@@ -33,12 +34,15 @@ import android.content.SharedPreferences
 class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListener {
 
     private val binder = LocalBinder()
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val myPeerId = UUID.randomUUID().toString()
+    private var isEndingCall = false
+    private val initDeferred = kotlinx.coroutines.CompletableDeferred<Unit>()
     
     // Core Dependencies
     lateinit var webRtcClient: WebRtcClient
         private set
+
     var signalingServer: SignalingServer? = null
         private set
     var signalingClient: SignalingClient? = null
@@ -57,6 +61,16 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
     private val _isMuted = MutableStateFlow(false)
     val isMuted: StateFlow<Boolean> = _isMuted
     
+    private val _connectionStats = MutableStateFlow<Map<String, String>>(emptyMap())
+    val connectionStats: StateFlow<Map<String, String>> = _connectionStats
+    
+    private val _hasJoined = MutableStateFlow(false)
+    val hasJoined: StateFlow<Boolean> = _hasJoined
+    
+    fun setHasJoined(joined: Boolean) {
+        _hasJoined.value = joined
+    }
+    
     private var hardwarePttManager: HardwarePttManager? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -67,6 +81,55 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
     var isBidirectional = false
         private set
     private var mediaStreamer: MediaStreamer? = null
+    
+    private var myIcePort: Int? = null
+    private var remoteIcePort: Int? = null
+    private var udpProxy: UdpProxy? = null
+    private var isHostSignaling = false
+    
+    // Network Lifecycle decoupled from UI
+    lateinit var nanImpl: com.tylerhats.proxitap.network.NanImpl
+    lateinit var hotspotImpl: com.tylerhats.proxitap.network.HotspotImpl
+    lateinit var distanceTracker: com.tylerhats.proxitap.network.DistanceTracker
+    
+    fun getNetworkManager(mode: String?): com.tylerhats.proxitap.network.LocalNetworkManager {
+        return if (mode == "hotspot") hotspotImpl else nanImpl
+    }
+
+    private fun checkAndStartProxy() {
+        if (remoteIcePort != null) {
+            if (udpProxy != null) {
+                if (udpProxy?.localListenPort != remoteIcePort) {
+                    Log.d("CallService", "Recreating UDP proxy for new remote ICE port")
+                    udpProxy?.stop()
+                    udpProxy = null
+                } else {
+                    // Proxy already exists for this remote port. Update target port if we now have myIcePort
+                    if (myIcePort != null && udpProxy?.localTargetPort != myIcePort) {
+                        Log.d("CallService", "Updating UDP proxy target port to $myIcePort")
+                        udpProxy?.localTargetPort = myIcePort
+                    }
+                    return
+                }
+            }
+            
+            udpProxy = UdpProxy(
+                localListenPort = remoteIcePort!!,
+                localTargetPort = myIcePort
+            ) { data ->
+                scope.launch {
+                    initDeferred.await()
+                    if (isHostSignaling) {
+                        signalingServer?.broadcastAudioData(data)
+                    } else {
+                        signalingClient?.sendAudioData(data)
+                    }
+                }
+            }
+            udpProxy?.start()
+            Log.d("CallService", "UDP Proxy started! Listen: $remoteIcePort, Target: $myIcePort")
+        }
+    }
 
     inner class LocalBinder : Binder() {
         fun getService(): CallService = this@CallService
@@ -74,6 +137,11 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
 
     override fun onCreate() {
         super.onCreate()
+        
+        nanImpl = com.tylerhats.proxitap.network.NanImpl(this)
+        hotspotImpl = com.tylerhats.proxitap.network.HotspotImpl(this)
+        distanceTracker = com.tylerhats.proxitap.network.DistanceTracker(this)
+        
         createNotificationChannel()
         
         val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
@@ -87,9 +155,9 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         val opusBitrate = prefs.getInt("opus_bitrate", 64000)
 
         if (useBluetoothMic) {
-            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            audioManager.startBluetoothSco()
-            audioManager.isBluetoothScoOn = true
+            // WebRTC's JavaAudioDeviceModule naturally handles Bluetooth SCO natively.
+            // Manually enforcing it here breaks the audio routing on some devices.
+            Log.d("CallService", "Bluetooth Mic enabled in settings. WebRTC will handle routing.")
         }
 
         webRtcClient = WebRtcClient(this).apply {
@@ -143,55 +211,90 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         const val ACTION_SET_MUTE = "com.tylerhats.proxitap.action.SET_MUTE"
     }
 
+    fun initializeCall(mediaLobby: Boolean, bidirectional: Boolean, mediaResult: Int = 0, mediaData: Intent? = null) {
+        isMediaLobby = mediaLobby
+        isBidirectional = bidirectional
+
+        if (!isMediaLobby) {
+            try {
+                if (!webRtcClient.hasWebRtcInitialized()) {
+                    val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                    audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                    webRtcClient.initWebRtcAndTracks()
+                }
+            } catch (e: Exception) {
+                Log.e("CallService", "Error initializing WebRTC", e)
+            }
+        }
+        
+        if (mediaStreamer == null) {
+            mediaStreamer = MediaStreamer(this)
+            mediaStreamer?.startPlayback(isMono = !isMediaLobby)
+            
+            if (isMediaLobby && mediaResult != 0 && mediaData != null) {
+                val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
+                val projection = mediaProjectionManager.getMediaProjection(mediaResult, mediaData)
+                if (projection != null) {
+                    mediaStreamer?.startCapture(projection) { audioData ->
+                        scope.launch {
+                            if (signalingServer != null) {
+                                signalingServer?.broadcastAudioData(audioData)
+                            } else if (signalingClient != null) {
+                                signalingClient?.sendAudioData(audioData)
+                            }
+                        }
+                    }
+                }
+            } else if (isMediaLobby && isBidirectional) {
+                // In Media Lobbies with bidirectional audio, we can still use MediaStreamer mic
+                mediaStreamer?.startMicrophoneCapture { audioData ->
+                    if (!_isMuted.value) {
+                        scope.launch {
+                            if (signalingServer != null) {
+                                signalingServer?.broadcastAudioData(audioData)
+                            } else if (signalingClient != null) {
+                                signalingClient?.sendAudioData(audioData)
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Voice Activity Detection
+            if (!isMediaLobby && ::webRtcClient.isInitialized) {
+                webRtcClient.startAudioLevelMonitoring { speaking ->
+                    _isSpeaking.value = speaking
+                }
+            }
+        }
+        
+        initDeferred.complete(Unit)
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_END_CALL) {
             Log.d("CallService", "Received ACTION_END_CALL from Notification")
             // Send broadcast to let MainActivity know the call ended
-            sendBroadcast(Intent("com.tylerhats.proxitap.CALL_ENDED"))
+            sendBroadcast(Intent("com.tylerhats.proxitap.CALL_ENDED").setPackage(packageName))
             endCall()
             return START_NOT_STICKY
         }
-
-        intent?.let {
-            if (it.hasExtra("isMediaLobby")) {
-                isMediaLobby = it.getBooleanExtra("isMediaLobby", false)
-                isBidirectional = it.getBooleanExtra("isBidirectional", false)
-                val mediaResult = it.getIntExtra("media_projection_result", 0)
-                val mediaData = it.getParcelableExtra<Intent>("media_projection_data")
-                
-                if (isMediaLobby && mediaStreamer == null) {
-                    mediaStreamer = MediaStreamer(this)
-                    mediaStreamer?.startPlayback()
-                    
-                    if (mediaResult != 0 && mediaData != null) {
-                        val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
-                        val projection = mediaProjectionManager.getMediaProjection(mediaResult, mediaData)
-                        if (projection != null) {
-                            mediaStreamer?.startCapture(projection) { audioData ->
-                                if (signalingServer != null) {
-                                    scope.launch { signalingServer?.broadcastAudioData(audioData) }
-                                } else if (signalingClient != null) {
-                                    signalingClient?.sendAudioData(audioData)
-                                }
-                            }
-                        }
-                    }
-                    webRtcClient.startAudioLevelMonitoring { speaking ->
-                        _isSpeaking.value = speaking
-                    }
-                }
-            }
+        if (intent?.action == ACTION_SET_MUTE) {
+            toggleMute()
+            return START_STICKY
         }
 
+        // Determine service type early to call startForeground before getting projection
+        val isMedia = intent?.getBooleanExtra("isMediaLobby", false) ?: false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            val type = if (isMediaLobby) {
+            val type = if (isMedia) {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             } else {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
             }
             startForeground(1, createNotification(), type)
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val type = if (isMediaLobby) {
+            val type = if (isMedia) {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             } else {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
@@ -201,13 +304,56 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             startForeground(1, createNotification())
         }
 
+        intent?.let {
+            if (it.hasExtra("isMediaLobby")) {
+                val mResult = it.getIntExtra("media_projection_result", 0)
+                val mData = it.getParcelableExtra<Intent>("media_projection_data")
+                initializeCall(
+                    it.getBooleanExtra("isMediaLobby", false),
+                    it.getBooleanExtra("isBidirectional", false),
+                    mResult,
+                    mData
+                )
+            }
+        }
+        
+        // Start Stats Poller
+        scope.launch {
+            while (isActive) {
+                val stats = mutableMapOf<String, String>()
+                val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                stats["Audio Route"] = if (audioManager.isBluetoothScoOn) "Bluetooth SCO" 
+                                       else if (audioManager.isSpeakerphoneOn) "Speakerphone"
+                                       else "Earpiece/Default"
+                stats["Media Streamer"] = if (mediaStreamer != null) "Active" else "Inactive"
+                stats["Hardware PTT"] = if (hardwarePttManager?.isHardwarePttEnabled == true) "Enabled" else "Disabled"
+                stats["Network Transport"] = if (isHostSignaling) "Server Mode" else "Client Mode"
+                stats["Lobby Type"] = if (isMediaLobby) "Media" else "Talk"
+                stats["WebRTC Mode"] = if (::webRtcClient.isInitialized) "Initialized" else "Not Initialized"
+                
+                _connectionStats.value = stats
+                kotlinx.coroutines.delay(2000)
+            }
+        }
+
         return START_NOT_STICKY
     }
 
     fun toggleMute() {
         val newMuted = !_isMuted.value
         _isMuted.value = newMuted
-        webRtcClient.setMute(newMuted)
+        
+        // Update notification
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.notify(1, createNotification())
+        
+        if (isMediaLobby && mediaStreamer != null) {
+            return
+        }
+        
+        if (::webRtcClient.isInitialized) {
+            webRtcClient.setMute(newMuted)
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder {
@@ -220,49 +366,45 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
 
         when (key) {
             "ns_enabled" -> {
-                webRtcClient.isNoiseSuppressionEnabled = sharedPreferences.getBoolean(key, true)
-                // Note: WebRTC hardware ADM constraints cannot be hot-swapped without rebuilding the AudioTrack.
-                // However, software processing in WebRTC would adapt. For V1 we update the field.
+                if (::webRtcClient.isInitialized) {
+                    webRtcClient.isNoiseSuppressionEnabled = sharedPreferences.getBoolean(key, true)
+                }
             }
             "aec_enabled" -> {
-                webRtcClient.isAcousticEchoCancellationEnabled = sharedPreferences.getBoolean(key, true)
+                if (::webRtcClient.isInitialized) {
+                    webRtcClient.isAcousticEchoCancellationEnabled = sharedPreferences.getBoolean(key, true)
+                }
             }
             "hardware_ptt" -> {
                 hardwarePttManager?.isHardwarePttEnabled = sharedPreferences.getBoolean(key, false)
             }
             "bluetooth_mic" -> {
                 val useBluetooth = sharedPreferences.getBoolean(key, true)
-                if (useBluetooth) {
-                    audioManager.startBluetoothSco()
-                    audioManager.isBluetoothScoOn = true
-                } else {
-                    audioManager.stopBluetoothSco()
-                    audioManager.isBluetoothScoOn = false
-                }
+                Log.d("CallService", "Bluetooth mic setting changed: $useBluetooth")
+                // Routing will update automatically via WebRTC context
             }
             "opus_dtx" -> {
-                webRtcClient.opusDtxEnabled = sharedPreferences.getBoolean(key, true)
+                if (::webRtcClient.isInitialized) {
+                    webRtcClient.opusDtxEnabled = sharedPreferences.getBoolean(key, true)
+                }
             }
             "opus_bitrate" -> {
-                webRtcClient.opusBitrateBps = sharedPreferences.getInt(key, 64000)
+                if (::webRtcClient.isInitialized) {
+                    webRtcClient.opusBitrateBps = sharedPreferences.getInt(key, 64000)
+                }
             }
         }
     }
 
     fun startHostSignaling(port: Int = 8080) {
-        if (signalingServer != null) {
-            Log.d("CallService", "Signaling Server already running")
-            return
-        }
-        if (!isMediaLobby) {
-            try {
-                if (!webRtcClient.hasWebRtcInitialized()) {
-                    webRtcClient.initWebRtcAndTracks()
-                }
-            } catch (e: Exception) {
-                Log.e("CallService", "Error initializing WebRTC", e)
+        scope.launch {
+            initDeferred.await()
+            if (signalingServer != null) {
+                Log.d("CallService", "Signaling Server already running")
+                return@launch
             }
-        }
+            
+            isHostSignaling = true
 
         signalingServer = SignalingServer()
         signalingServer?.startServer(port)
@@ -271,45 +413,68 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             signalingServer?.incomingMessages?.collect { (senderId, json) ->
                 val type = json.getString("type")
                 if (type == "JOIN") {
-                    Log.d("CallService", "Peer $senderId joined. Creating PeerConnection.")
+                    Log.d("CallService", "Peer $senderId joined.")
                     
-                    val signalingCallback = object : WebRtcClient.SignalingCallback {
-                        override fun onOfferCreated(peerId: String, sdp: String) {
-                            val offerMsg = JSONObject().apply {
-                                put("type", "OFFER")
-                                put("target", peerId)
-                                put("sdp", sdp)
-                            }
-                            scope.launch { signalingServer?.sendMessageToPeer(peerId, offerMsg) }
-                        }
-
-                        override fun onAnswerCreated(peerId: String, sdp: String) {}
-
-                        override fun onIceCandidate(peerId: String, sdpMid: String, sdpMLineIndex: Int, sdp: String) {
-                            val iceMsg = JSONObject().apply {
-                                put("type", "ICE")
-                                put("target", peerId)
-                                put("sdpMid", sdpMid)
-                                put("sdpMLineIndex", sdpMLineIndex)
-                                put("sdp", sdp)
-                            }
-                            scope.launch { signalingServer?.sendMessageToPeer(peerId, iceMsg) }
-                        }
-                    }
-
                     if (!isMediaLobby) {
+                        val signalingCallback = object : WebRtcClient.SignalingCallback {
+                            override fun onOfferCreated(peerId: String, sdp: String) {
+                                val offerMsg = JSONObject().apply {
+                                    put("type", "OFFER")
+                                    put("target", peerId)
+                                    put("sdp", sdp)
+                                }
+                                scope.launch { signalingServer?.sendMessageToPeer(peerId, offerMsg) }
+                            }
+
+                            override fun onAnswerCreated(peerId: String, sdp: String) {}
+
+                            override fun onIceCandidate(peerId: String, sdpMid: String, sdpMLineIndex: Int, sdp: String) {
+                                if (sdp.contains("127.0.0.1") && sdp.contains("udp")) {
+                                    val parts = sdp.split(" ")
+                                    if (parts.size >= 6) {
+                                        myIcePort = parts[5].toIntOrNull()
+                                        checkAndStartProxy()
+                                    }
+                                }
+                                // Only send 127.0.0.1 loopback candidates to trick peer WebRTC to hit the proxy
+                                if (sdp.contains("127.0.0.1")) {
+                                    val iceMsg = JSONObject().apply {
+                                        put("type", "ICE")
+                                        put("target", peerId)
+                                        put("sdpMid", sdpMid)
+                                        put("sdpMLineIndex", sdpMLineIndex)
+                                        put("sdp", sdp)
+                                    }
+                                    scope.launch { signalingServer?.sendMessageToPeer(peerId, iceMsg) }
+                                }
+                            }
+                        }
+
                         if (webRtcClient.hasPeerConnection(senderId)) {
                             Log.d("CallService", "Peer $senderId already exists. Triggering ICE Restart.")
                             webRtcClient.triggerIceRestart(senderId, signalingCallback)
                         } else {
-                            webRtcClient.createPeerConnection(senderId, signalingCallback)
-                            // In a star topology, Host acts as SFU. It sends an offer to the new peer.
+                            webRtcClient.createPeerConnection(senderId, isHost = true, signalingCallback)
                             webRtcClient.createOffer(senderId, signalingCallback)
                         }
-                    } else {
-                        Log.d("CallService", "Media Lobby: Skipping WebRTC for $senderId")
+                        
+                        // Sync settings to the new peer
+                        val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
+                        val settingsMsg = JSONObject().apply {
+                            put("type", "SETTINGS")
+                            put("opusBitrate", prefs.getInt("opus_bitrate", 64000))
+                            put("opusDtx", prefs.getBoolean("opus_dtx", true))
+                            put("nsEnabled", prefs.getBoolean("ns_enabled", true))
+                            put("aecEnabled", prefs.getBoolean("aec_enabled", true))
+                        }
+                        scope.launch { signalingServer?.sendMessageToPeer(senderId, settingsMsg) }
                     }
-                } 
+                }
+                else if (type == "LEAVE") {
+                    Log.d("CallService", "Peer $senderId left.")
+                    webRtcClient.removePeerConnection(senderId)
+                    // The server will handle updating the participant list and broadcasting it automatically
+                }
                 else if (type == "PARTICIPANTS_UPDATE") {
                     val array = json.getJSONArray("participants")
                     val list = mutableListOf<String>()
@@ -323,15 +488,23 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                     }
                     _participants.value = list
                 }
-                else if (type == "ANSWER") {
+                else if (type == "ANSWER" && !isMediaLobby) {
                     webRtcClient.handleRemoteAnswer(senderId, json.getString("sdp"))
                 }
-                else if (type == "ICE") {
+                else if (type == "ICE" && !isMediaLobby) {
+                    val sdp = json.getString("sdp")
+                    if (sdp.contains("127.0.0.1") && sdp.contains("udp")) {
+                        val parts = sdp.split(" ")
+                        if (parts.size >= 6) {
+                            remoteIcePort = parts[5].toIntOrNull()
+                            checkAndStartProxy()
+                        }
+                    }
                     webRtcClient.handleRemoteIceCandidate(
                         senderId,
                         json.getString("sdpMid"),
                         json.getInt("sdpMLineIndex"),
-                        json.getString("sdp")
+                        sdp
                     )
                 }
             }
@@ -339,35 +512,32 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         
         scope.launch {
             signalingServer?.incomingAudio?.collect { (_, audioData) ->
-                if (isMediaLobby && isBidirectional) {
+                if (isMediaLobby) {
                     mediaStreamer?.playAudioData(audioData)
-                    // Optional: broadcast this peer's audio to other peers
                     signalingServer?.broadcastAudioData(audioData)
+                } else {
+                    udpProxy?.sendUdpData(audioData)
                 }
+            }
             }
         }
     }
 
     fun startPeerSignaling(hostIp: String, port: Int = 8080) {
-        if (signalingClient != null) {
-            Log.d("CallService", "Signaling Client already running")
-            return
-        }
-        if (!isMediaLobby) {
-            try {
-                if (!webRtcClient.hasWebRtcInitialized()) {
-                    webRtcClient.initWebRtcAndTracks()
-                }
-            } catch (e: Exception) {
-                Log.e("CallService", "Error initializing WebRTC", e)
+        scope.launch {
+            initDeferred.await()
+            if (signalingClient != null) {
+                Log.d("CallService", "Signaling Client already running")
+                return@launch
             }
-        }
+            
+            isHostSignaling = false
 
         val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
         val deviceName = prefs.getString("display_name", Build.MODEL) ?: Build.MODEL
         signalingClient = SignalingClient(hostIp, port)
         signalingClient?.connect(myPeerId, deviceName)
-
+        
         val signalingCallback = object : WebRtcClient.SignalingCallback {
             override fun onOfferCreated(peerId: String, sdp: String) {}
 
@@ -381,14 +551,23 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             }
 
             override fun onIceCandidate(peerId: String, sdpMid: String, sdpMLineIndex: Int, sdp: String) {
-                val iceMsg = JSONObject().apply {
-                    put("type", "ICE")
-                    put("target", peerId)
-                    put("sdpMid", sdpMid)
-                    put("sdpMLineIndex", sdpMLineIndex)
-                    put("sdp", sdp)
+                if (sdp.contains("127.0.0.1") && sdp.contains("udp")) {
+                    val parts = sdp.split(" ")
+                    if (parts.size >= 6) {
+                        myIcePort = parts[5].toIntOrNull()
+                        checkAndStartProxy()
+                    }
                 }
-                signalingClient?.sendMessage(iceMsg)
+                if (sdp.contains("127.0.0.1")) {
+                    val iceMsg = JSONObject().apply {
+                        put("type", "ICE")
+                        put("target", peerId)
+                        put("sdpMid", sdpMid)
+                        put("sdpMLineIndex", sdpMLineIndex)
+                        put("sdp", sdp)
+                    }
+                    signalingClient?.sendMessage(iceMsg)
+                }
             }
         }
 
@@ -397,14 +576,12 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                 val type = json.getString("type")
                 if (type == "SESSION_CLOSED") {
                     Log.d("CallService", "Host closed the session. Ending call.")
-                    sendBroadcast(Intent("com.tylerhats.proxitap.CALL_ENDED"))
+                    sendBroadcast(Intent("com.tylerhats.proxitap.CALL_ENDED").setPackage(packageName))
                     endCall()
                     return@collect
                 }
                 
                 if (json.has("target") && json.getString("target") != myPeerId) return@collect
-
-                val senderId = "HOST" // Peers only connect directly to host in SFU
 
                 if (type == "PARTICIPANTS_UPDATE") {
                     val array = json.getJSONArray("participants")
@@ -421,20 +598,42 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                     list.add(0, "Host")
                     _participants.value = list
                 }
-                else if (type == "OFFER") {
+                else if (type == "SETTINGS" && !isMediaLobby) {
+                    val bitrate = json.optInt("opusBitrate", 64000)
+                    val dtx = json.optBoolean("opusDtx", true)
+                    val ns = json.optBoolean("nsEnabled", true)
+                    val aec = json.optBoolean("aecEnabled", true)
+                    Log.d("CallService", "Received synced settings from Host: Bitrate=$bitrate DTX=$dtx")
+                    
+                    webRtcClient.opusBitrateBps = bitrate
+                    webRtcClient.opusDtxEnabled = dtx
+                    webRtcClient.isNoiseSuppressionEnabled = ns
+                    webRtcClient.isAcousticEchoCancellationEnabled = aec
+                    
+                    // The PeerConnection will use these updated parameters when modifying local tracks/sender
+                    webRtcClient.applyAudioSettingsToActiveConnections()
+                }
+                else if (type == "OFFER" && !isMediaLobby) {
+                    val senderId = "HOST"
                     if (!webRtcClient.hasPeerConnection(senderId)) {
-                        webRtcClient.createPeerConnection(senderId, signalingCallback)
-                    } else {
-                        Log.d("CallService", "Received new OFFER for existing peer. Processing as ICE Restart.")
+                        webRtcClient.createPeerConnection(senderId, isHost = false, signalingCallback)
                     }
                     webRtcClient.handleRemoteOffer(senderId, json.getString("sdp"), signalingCallback)
                 }
-                else if (type == "ICE") {
+                else if (type == "ICE" && !isMediaLobby) {
+                    val sdp = json.getString("sdp")
+                    if (sdp.contains("127.0.0.1") && sdp.contains("udp")) {
+                        val parts = sdp.split(" ")
+                        if (parts.size >= 6) {
+                            remoteIcePort = parts[5].toIntOrNull()
+                            checkAndStartProxy()
+                        }
+                    }
                     webRtcClient.handleRemoteIceCandidate(
-                        senderId,
+                        "HOST",
                         json.getString("sdpMid"),
                         json.getInt("sdpMLineIndex"),
-                        json.getString("sdp")
+                        sdp
                     )
                 }
             }
@@ -444,13 +643,31 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             signalingClient?.incomingAudio?.collect { audioData ->
                 if (isMediaLobby) {
                     mediaStreamer?.playAudioData(audioData)
+                } else {
+                    udpProxy?.sendUdpData(audioData)
                 }
             }
         }
     }
+}
 
     fun endCall() {
-        Log.d("CallService", "Ending call and cleaning up resources")
+        if (isEndingCall) return
+        isEndingCall = true
+        Log.d("CallService", "Ending call")
+        if (!isHostSignaling) {
+            val msg = JSONObject().apply { put("type", "LEAVE") }
+            signalingClient?.sendMessage(msg)
+        }
+
+        _isSpeaking.value = false
+        _participants.value = emptyList()
+        _connectionStats.value = emptyMap()
+        _hasJoined.value = false
+        
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        am.mode = AudioManager.MODE_NORMAL
+        am.isSpeakerphoneOn = false
         val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
         prefs.unregisterOnSharedPreferenceChangeListener(this)
         
@@ -473,19 +690,44 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         }
         pttReceiver = null
 
-        scope.cancel()
-        webRtcClient.dispose()
-        mediaStreamer?.stop()
-        signalingServer?.stopServer()
-        signalingClient?.disconnect()
-        hardwarePttManager?.stop()
-        hardwarePttManager?.release()
+        try { scope.cancel() } catch (e: Exception) { Log.e("CallService", "Error cancelling scope", e) }
+        scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         
-        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        if (audioManager.isBluetoothScoOn) {
-            audioManager.stopBluetoothSco()
-            audioManager.isBluetoothScoOn = false
+        if (::webRtcClient.isInitialized) {
+            try { webRtcClient.dispose() } catch (e: Exception) { Log.e("CallService", "Error disposing webRtcClient", e) }
         }
+        
+        try { udpProxy?.stop() } catch (e: Exception) { Log.e("CallService", "Error stopping udpProxy", e) }
+        udpProxy = null
+        
+        try { mediaStreamer?.stop() } catch (e: Exception) { Log.e("CallService", "Error stopping mediaStreamer", e) }
+        mediaStreamer = null
+        
+        try { signalingServer?.stopServer() } catch (e: Exception) { Log.e("CallService", "Error stopping signalingServer", e) }
+        signalingServer = null
+        
+        try { signalingClient?.disconnect() } catch (e: Exception) { Log.e("CallService", "Error disconnecting signalingClient", e) }
+        signalingClient = null
+        
+        try { 
+            hardwarePttManager?.stop()
+            hardwarePttManager?.release()
+        } catch (e: Exception) { Log.e("CallService", "Error stopping hardwarePttManager", e) }
+        hardwarePttManager = null
+        
+        try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            if (audioManager.isBluetoothScoOn) {
+                audioManager.stopBluetoothSco()
+                audioManager.isBluetoothScoOn = false
+            }
+        } catch (e: Exception) { Log.e("CallService", "Error stopping Bluetooth SCO", e) }
+        
+        try {
+            nanImpl.stop()
+            hotspotImpl.stop()
+            distanceTracker.stopTracking()
+        } catch (e: Exception) { Log.e("CallService", "Error stopping network managers", e) }
         
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -520,7 +762,9 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
 
     private fun createNotification(): Notification {
         // Main Intent to open the app
-        val appIntent = packageManager.getLaunchIntentForPackage(packageName)
+        val appIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        }
         val pendingAppIntent = android.app.PendingIntent.getActivity(
             this, 0, appIntent, android.app.PendingIntent.FLAG_IMMUTABLE
         )
@@ -530,6 +774,19 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         val pendingEndCallIntent = android.app.PendingIntent.getService(
             this, 1, endCallIntent, android.app.PendingIntent.FLAG_IMMUTABLE
         )
+
+        val muteIntent = Intent(this, CallService::class.java).apply { action = ACTION_SET_MUTE }
+        val pendingMuteIntent = android.app.PendingIntent.getService(
+            this, 2, muteIntent, android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+        
+        val muteActionTitle = if (isMuted.value) "Unmute" else "Mute"
+        val muteIcon = if (isMuted.value) android.R.drawable.ic_lock_silent_mode else android.R.drawable.ic_lock_silent_mode_off
+        val muteAction = NotificationCompat.Action.Builder(
+            muteIcon,
+            muteActionTitle,
+            pendingMuteIntent
+        ).build()
 
         val person = androidx.core.app.Person.Builder()
             .setName("ProxiTap Lobby")
@@ -543,6 +800,7 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             .setContentText("Walkie-Talkie stream is running")
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setStyle(callStyle)
+            .addAction(muteAction)
             .setUsesChronometer(true) // Native animated timer for the call duration!
             .setContentIntent(pendingAppIntent)
             .setOngoing(true)

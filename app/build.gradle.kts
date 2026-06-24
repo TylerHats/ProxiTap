@@ -37,19 +37,9 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
-    packaging {
-        jniLibs {
-            useLegacyPackaging = true
-        }
-    }
 
     buildFeatures {
         compose = true
-    }
-    packaging {
-        jniLibs {
-            useLegacyPackaging = true
-        }
     }
 }
 

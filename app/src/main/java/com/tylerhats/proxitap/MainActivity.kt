@@ -79,20 +79,15 @@ fun ProxiTapApp() {
     
     val mediaProjectionManager = context.getSystemService(android.content.Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
     var pendingLobbyAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var captureIntentData by remember { mutableStateOf<android.content.Intent?>(null) }
+    var captureIntentResult by remember { mutableStateOf(0) }
     
     val screenCaptureLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == android.app.Activity.RESULT_OK && result.data != null) {
-            val intent = android.content.Intent(context, com.tylerhats.proxitap.audio.CallService::class.java)
-            intent.putExtra("media_projection_data", result.data)
-            intent.putExtra("media_projection_result", result.resultCode)
-            // The actual flags (isMediaLobby/isBidirectional) will be set when the lobby starts in LaunchedEffect
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
+            captureIntentData = result.data
+            captureIntentResult = result.resultCode
             pendingLobbyAction?.invoke()
         } else {
             android.widget.Toast.makeText(context, "Permission required for Media Lobby", android.widget.Toast.LENGTH_LONG).show()
@@ -100,15 +95,14 @@ fun ProxiTapApp() {
         pendingLobbyAction = null
     }
     
-    // Helper to get active manager based on mode
-    fun getNetworkManager(mode: String?): com.tylerhats.proxitap.network.LocalNetworkManager {
-        return if (mode == "hotspot") hotspotImpl else nanImpl
-    }
-    
-    val distanceTracker = remember { com.tylerhats.proxitap.network.DistanceTracker(context) }
-    
     // Bind to CallService
     var callService by remember { mutableStateOf<com.tylerhats.proxitap.audio.CallService?>(null) }
+    
+    // Helper to get active manager based on mode
+    fun getNetworkManager(mode: String?): com.tylerhats.proxitap.network.LocalNetworkManager? {
+        val s = callService ?: return null
+        return if (mode == "hotspot") s.hotspotImpl else s.nanImpl
+    }
     
     DisposableEffect(context) {
         val connection = object : android.content.ServiceConnection {
@@ -134,10 +128,20 @@ fun ProxiTapApp() {
             HomeScreen(
                 onHostClick = { name, pin, useHotspot, enableRadar, isMediaLobby, isBidirectional -> 
                     isHost = true
+                    val safePin = if (pin.isNullOrBlank()) "NONE" else pin
                     val startAction = {
-                        navController.navigate("lobby?name=$name&pin=${pin ?: ""}&hotspot=$useHotspot&radar=$enableRadar&media=$isMediaLobby&bidi=$isBidirectional")
+                        navController.navigate("lobby?name=$name&pin=$safePin&hotspot=$useHotspot&radar=$enableRadar&media=$isMediaLobby&bidi=$isBidirectional")
                     }
                     if (isMediaLobby) {
+                        val serviceIntent = android.content.Intent(context, com.tylerhats.proxitap.audio.CallService::class.java).apply {
+                            putExtra("isMediaLobby", true)
+                            putExtra("isBidirectional", isBidirectional)
+                        }
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                            context.startForegroundService(serviceIntent)
+                        } else {
+                            context.startService(serviceIntent)
+                        }
                         pendingLobbyAction = startAction
                         screenCaptureLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
                     } else {
@@ -150,24 +154,34 @@ fun ProxiTapApp() {
                 },
                 onSearchAreaClick = {
                     isHost = false
-                    discoveredLobbies.clear()
-                    nanImpl.discoverLobbies { name, isProtected, isMedia, isBidi, payload ->
-                        // Prevent duplicates
-                        if (discoveredLobbies.none { it.name == name }) {
-                            discoveredLobbies.add(DiscoveredLobby(name, isProtected, isMedia, isBidi, payload))
-                        }
-                    }
                     navController.navigate("serverList")
                 }
             )
+            LaunchedEffect(callService) {
+                if (callService != null) {
+                    while(true) {
+                        discoveredLobbies.clear()
+                        callService?.nanImpl?.discoverLobbies { name, isProtected, isMedia, isBidi, fullPayload ->
+                            val existingIndex = discoveredLobbies.indexOfFirst { it.name == name }
+                            if (existingIndex != -1) {
+                                // Replace the stale cache with the new properties
+                                discoveredLobbies[existingIndex] = DiscoveredLobby(name, isProtected, isMedia, isBidi, fullPayload)
+                            } else {
+                                discoveredLobbies.add(DiscoveredLobby(name, isProtected, isMedia, isBidi, fullPayload))
+                            }
+                        }
+                        kotlinx.coroutines.delay(10000)
+                    }
+                }
+            }
         }
         composable("serverList") {
             ServerListScreen(
                 discoveredLobbies = discoveredLobbies,
                 onLobbyClick = { lobby, pinInput ->
                     val encoded = java.net.URLEncoder.encode(lobby.payload, "UTF-8")
-                    // Now we pass the media flags down so it doesn't default to standard
-                    navController.navigate("call?mode=nan&service=$encoded&media=${lobby.isMedia}&bidi=${lobby.isBidi}&pin=$pinInput")
+                    val safePin = if (pinInput.isBlank()) "NONE" else pinInput
+                    navController.navigate("call?mode=nan&service=$encoded&media=${lobby.isMedia}&bidi=${lobby.isBidi}&pin=$safePin")
                 },
                 onBackClick = {
                     nanImpl.stop()
@@ -187,36 +201,46 @@ fun ProxiTapApp() {
             )
         ) { backStackEntry ->
             val name = backStackEntry.arguments?.getString("name") ?: "ProxiTap_Lobby"
-            val pin = backStackEntry.arguments?.getString("pin") ?: ""
+            val pinArg = backStackEntry.arguments?.getString("pin") ?: ""
+            val pin = if (pinArg == "NONE") "" else pinArg
             val useHotspot = backStackEntry.arguments?.getString("hotspot") == "true"
             val enableRadar = backStackEntry.arguments?.getString("radar") == "true"
             val isMediaLobby = backStackEntry.arguments?.getString("media") == "true"
             val isBidirectional = backStackEntry.arguments?.getString("bidi") == "true"
-            val activeManager = if (useHotspot) hotspotImpl else nanImpl
             val modeStr = if (useHotspot) "hotspot" else "nan"
+            val activeManager = getNetworkManager(modeStr)
             
             var servicePayload by remember { mutableStateOf<String?>(null) }
             var hostNetworkReady by remember { mutableStateOf(false) }
             
-            LaunchedEffect(name, pin) {
-                try {
-                    servicePayload = activeManager.startHosting(name, pin, isMediaLobby, isBidirectional)
-                    hostNetworkReady = true
-                } catch (e: Exception) {
-                    android.util.Log.e("MainActivity", "Failed to start hosting", e)
+            LaunchedEffect(name, pin, activeManager) {
+                if (activeManager != null) {
+                    try {
+                        servicePayload = activeManager.startHosting(name, pin, isMediaLobby, isBidirectional)
+                        hostNetworkReady = true
+                    } catch (e: Exception) {
+                        android.util.Log.e("MainActivity", "Failed to start hosting", e)
+                    }
                 }
             }
 
-            LaunchedEffect(hostNetworkReady, callService) {
-                if (hostNetworkReady && callService != null) {
+            val hasJoined by (callService?.hasJoined ?: kotlinx.coroutines.flow.MutableStateFlow(false)).collectAsState()
+
+            LaunchedEffect(hostNetworkReady, callService, hasJoined) {
+                if (hostNetworkReady && callService != null && !hasJoined) {
                     val intent = android.content.Intent(context, com.tylerhats.proxitap.audio.CallService::class.java)
                     intent.putExtra("isMediaLobby", isMediaLobby)
                     intent.putExtra("isBidirectional", isBidirectional)
+                    if (isMediaLobby && captureIntentData != null) {
+                        intent.putExtra("media_projection_data", captureIntentData)
+                        intent.putExtra("media_projection_result", captureIntentResult)
+                    }
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                         context.startForegroundService(intent)
                     } else {
                         context.startService(intent)
                     }
+                    callService?.setHasJoined(true)
                     callService?.startHostSignaling()
                 }
             }
@@ -271,52 +295,62 @@ fun ProxiTapApp() {
             val enableRadar = backStackEntry.arguments?.getString("radar") == "true"
             val isMediaLobby = backStackEntry.arguments?.getString("media") == "true"
             val isBidirectional = backStackEntry.arguments?.getString("bidi") == "true"
-            val pin = backStackEntry.arguments?.getString("pin") ?: ""
+            val pinArg = backStackEntry.arguments?.getString("pin") ?: ""
+            val pin = if (pinArg == "NONE") "" else pinArg
             val activeManager = getNetworkManager(mode)
             
             val isDeepLinkJoin = service != null
             if (isDeepLinkJoin) isHost = false
 
-            var isReconnecting by remember { mutableStateOf(isDeepLinkJoin) }
+            var isReconnecting by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(isDeepLinkJoin) }
+            val hasJoined by (callService?.hasJoined ?: kotlinx.coroutines.flow.MutableStateFlow(false)).collectAsState()
 
-            LaunchedEffect(service) {
-                if (isDeepLinkJoin && service != null) {
+            LaunchedEffect(service, activeManager, hasJoined) {
+                if (isDeepLinkJoin && service != null && activeManager != null && !hasJoined) {
                     val joinAction = suspend {
                         try {
                             val prefix = if (mode == "hotspot") "WIFI:T:WPA;S:" else "PROXI:NAN:S:"
                             val payload = "$prefix$service"
-                            activeManager.joinLobby(payload, pin)
+                            val joined = activeManager.joinLobby(payload, pin)
                             
-                            val intent = android.content.Intent(context, com.tylerhats.proxitap.audio.CallService::class.java)
-                            intent.putExtra("isMediaLobby", isMediaLobby)
-                            intent.putExtra("isBidirectional", isBidirectional)
-                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                                context.startForegroundService(intent)
+                            if (joined) {
+                                val intent = android.content.Intent(context, com.tylerhats.proxitap.audio.CallService::class.java)
+                                intent.putExtra("isMediaLobby", isMediaLobby)
+                                intent.putExtra("isBidirectional", isBidirectional)
+                                if (isMediaLobby && isBidirectional && captureIntentData != null) {
+                                    intent.putExtra("media_projection_data", captureIntentData)
+                                    intent.putExtra("media_projection_result", captureIntentResult)
+                                }
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                    context.startForegroundService(intent)
+                                } else {
+                                    context.startService(intent)
+                                }
+                                isReconnecting = false
                             } else {
-                                context.startService(intent)
+                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                    android.widget.Toast.makeText(context, "Failed to connect. Incorrect PIN or Host unavailable.", android.widget.Toast.LENGTH_LONG).show()
+                                    navController.popBackStack()
+                                }
                             }
-                            
-                            isReconnecting = false
                         } catch (e: Exception) {
                             android.util.Log.e("MainActivity", "Failed to join lobby", e)
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                android.widget.Toast.makeText(context, "Error connecting to lobby.", android.widget.Toast.LENGTH_LONG).show()
+                                navController.popBackStack()
+                            }
                         }
                     }
                     
-                    if (isBidirectional && !isHost) {
-                        pendingLobbyAction = {
-                            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch { joinAction() }
-                        }
-                        screenCaptureLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
-                    } else {
-                        joinAction()
-                    }
+                    joinAction()
                 }
             }
 
-            LaunchedEffect(isReconnecting, callService) {
-                if (!isReconnecting && !isHost && callService != null) {
-                    val hostIp = activeManager.getLocalIpAddress()
+            LaunchedEffect(isReconnecting, callService, hasJoined) {
+                if (!isReconnecting && !isHost && callService != null && !hasJoined) {
+                    val hostIp = getNetworkManager(mode)?.getLocalIpAddress()
                     if (hostIp != null) {
+                        callService?.setHasJoined(true)
                         // Pass IPv6 address in brackets if it is IPv6
                         val formattedIp = if (hostIp.contains(":")) "[$hostIp]" else hostIp
                         callService?.startPeerSignaling(formattedIp)
@@ -325,17 +359,17 @@ fun ProxiTapApp() {
             }
 
             // Radar Distance Tracking (Only for NAN mode when enabled)
-            val connectedNanPeers by nanImpl.connectedPeers.collectAsState()
-            LaunchedEffect(enableRadar, connectedNanPeers) {
-                if (enableRadar && mode == "nan") {
-                    distanceTracker.isTrackingEnabled = true
-                    distanceTracker.startTracking(connectedNanPeers)
+            val connectedNanPeers by (callService?.nanImpl?.connectedPeers ?: kotlinx.coroutines.flow.MutableStateFlow(emptyList())).collectAsState()
+            LaunchedEffect(enableRadar, connectedNanPeers, callService) {
+                if (enableRadar && mode == "nan" && callService != null) {
+                    callService?.distanceTracker?.isTrackingEnabled = true
+                    callService?.distanceTracker?.startTracking(connectedNanPeers)
                 } else {
-                    distanceTracker.stopTracking()
+                    callService?.distanceTracker?.stopTracking()
                 }
             }
 
-            val peerDistances by distanceTracker.peerDistances.collectAsState()
+            val peerDistances by (callService?.distanceTracker?.peerDistances ?: kotlinx.coroutines.flow.MutableStateFlow(emptyMap())).collectAsState()
             // We only have one peer in V1 (Host->Peer or Peer->Host), so we take the first distance if available
             val currentDistanceMeters = peerDistances.values.firstOrNull()
 
@@ -343,8 +377,6 @@ fun ProxiTapApp() {
                 val receiver = object : android.content.BroadcastReceiver() {
                     override fun onReceive(c: android.content.Context?, intent: android.content.Intent?) {
                         if (intent?.action == "com.tylerhats.proxitap.CALL_ENDED") {
-                            nanImpl.stop()
-                            hotspotImpl.stop()
                             navController.navigate("home") {
                                 popUpTo("home") { inclusive = true }
                             }
@@ -364,8 +396,9 @@ fun ProxiTapApp() {
 
             val isSpeaking by callService?.isSpeaking?.collectAsState() ?: remember { mutableStateOf(false) }
             val isMuted by callService?.isMuted?.collectAsState() ?: remember { mutableStateOf(false) }
-            val participants by callService?.participants?.collectAsState() ?: remember { mutableStateOf(emptyList()) }
-
+            val participants by (callService?.participants ?: kotlinx.coroutines.flow.MutableStateFlow(emptyList())).collectAsState()
+            val stats by (callService?.connectionStats ?: kotlinx.coroutines.flow.MutableStateFlow(emptyMap())).collectAsState()
+            
             CallScreen(
                 isHost = isHost,
                 isMuted = isMuted,
@@ -374,11 +407,9 @@ fun ProxiTapApp() {
                 isReconnecting = isReconnecting,
                 isMediaLobby = isMediaLobby,
                 participants = participants,
+                stats = stats,
                 onMuteToggle = { callService?.toggleMute() },
                 onEndCallClick = { 
-                    nanImpl.stop()
-                    hotspotImpl.stop()
-                    distanceTracker.stopTracking()
                     callService?.endCall()
                     navController.navigate("home") {
                         popUpTo("home") { inclusive = true }

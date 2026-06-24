@@ -82,7 +82,7 @@ class SignalingClient(private val hostIp: String, private val port: Int = 8080) 
                                 _incomingMessages.tryEmit(json)
                             } else if (frame is Frame.Binary) {
                                 val bytes = frame.readBytes()
-                                _incomingAudio.emit(bytes)
+                                _incomingAudio.tryEmit(bytes)
                             }
                         }
                     }
