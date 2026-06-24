@@ -44,6 +44,11 @@ class CallService : Service() {
     private val _distanceMeters = MutableStateFlow<Float?>(null)
     val distanceMeters: StateFlow<Float?> = _distanceMeters
 
+    private val _isMuted = MutableStateFlow(false)
+    val isMuted: StateFlow<Boolean> = _isMuted
+    
+    private var hardwarePttManager: HardwarePttManager? = null
+
     inner class LocalBinder : Binder() {
         fun getService(): CallService = this@CallService
     }
@@ -56,11 +61,36 @@ class CallService : Service() {
         webRtcClient.startAudioLevelMonitoring { speaking ->
             _isSpeaking.value = speaking
         }
+        
+        hardwarePttManager = HardwarePttManager(this) { muted ->
+            _isMuted.value = muted
+            webRtcClient.setMute(muted)
+        }
+        hardwarePttManager?.isHardwarePttEnabled = true
+        hardwarePttManager?.start()
+    }
+
+    companion object {
+        const val ACTION_END_CALL = "com.tylerhats.proxitap.action.END_CALL"
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_END_CALL) {
+            Log.d("CallService", "Received ACTION_END_CALL from Notification")
+            // Send broadcast to let MainActivity know the call ended
+            sendBroadcast(Intent("com.tylerhats.proxitap.CALL_ENDED"))
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
         startForeground(1, createNotification())
         return START_NOT_STICKY
+    }
+
+    fun toggleMute() {
+        val newMuted = !_isMuted.value
+        _isMuted.value = newMuted
+        webRtcClient.setMute(newMuted)
     }
 
     override fun onBind(intent: Intent?): IBinder {
@@ -177,6 +207,8 @@ class CallService : Service() {
         webRtcClient.dispose()
         signalingServer?.stopServer()
         signalingClient?.disconnect()
+        hardwarePttManager?.stop()
+        hardwarePttManager?.release()
     }
 
     private fun createNotificationChannel() {
@@ -184,7 +216,7 @@ class CallService : Service() {
             val channel = NotificationChannel(
                 "proxitap_call_channel",
                 "ProxiTap Active Call",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_HIGH // High importance required for CallStyle
             ).apply {
                 description = "Keeps the microphone active for Walkie-Talkie features"
             }
@@ -194,11 +226,34 @@ class CallService : Service() {
     }
 
     private fun createNotification(): Notification {
+        // Main Intent to open the app
+        val appIntent = packageManager.getLaunchIntentForPackage(packageName)
+        val pendingAppIntent = android.app.PendingIntent.getActivity(
+            this, 0, appIntent, android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // End Call Intent
+        val endCallIntent = Intent(this, CallService::class.java).apply { action = ACTION_END_CALL }
+        val pendingEndCallIntent = android.app.PendingIntent.getService(
+            this, 1, endCallIntent, android.app.PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val person = androidx.core.app.Person.Builder()
+            .setName("ProxiTap Lobby")
+            .setImportant(true)
+            .build()
+
+        val callStyle = NotificationCompat.CallStyle.forOngoingCall(person, pendingEndCallIntent)
+
         return NotificationCompat.Builder(this, "proxitap_call_channel")
-            .setContentTitle("ProxiTap")
-            .setContentText("Call is active")
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now) // Fallback icon
+            .setContentTitle("ProxiTap Call Active")
+            .setContentText("Walkie-Talkie stream is running")
+            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setStyle(callStyle)
+            .setUsesChronometer(true) // Native animated timer for the call duration!
+            .setContentIntent(pendingAppIntent)
             .setOngoing(true)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
             .build()
     }
 }

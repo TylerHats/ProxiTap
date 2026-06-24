@@ -46,6 +46,8 @@ fun ProxiTapApp() {
         return if (mode == "hotspot") hotspotImpl else nanImpl
     }
     
+    val distanceTracker = remember { com.tylerhats.proxitap.network.DistanceTracker(context) }
+    
     // Bind to CallService
     var callService by remember { mutableStateOf<com.tylerhats.proxitap.audio.CallService?>(null) }
     
@@ -71,9 +73,9 @@ fun ProxiTapApp() {
     NavHost(navController = navController, startDestination = "home") {
         composable("home") {
             HomeScreen(
-                onHostClick = { name, pin, useHotspot, forceRnnoise -> 
+                onHostClick = { name, pin, useHotspot, forceRnnoise, enableRadar -> 
                     isHost = true
-                    navController.navigate("lobby?name=$name&pin=${pin ?: ""}&hotspot=$useHotspot") 
+                    navController.navigate("lobby?name=$name&pin=${pin ?: ""}&hotspot=$useHotspot&radar=$enableRadar") 
                 },
                 onJoinClick = { 
                     isHost = false
@@ -103,16 +105,18 @@ fun ProxiTapApp() {
             )
         }
         composable(
-            route = "lobby?name={name}&pin={pin}&hotspot={hotspot}",
+            route = "lobby?name={name}&pin={pin}&hotspot={hotspot}&radar={radar}",
             arguments = listOf(
                 androidx.navigation.navArgument("name") { defaultValue = "ProxiTap_Lobby" },
                 androidx.navigation.navArgument("pin") { defaultValue = "" },
-                androidx.navigation.navArgument("hotspot") { defaultValue = "false" }
+                androidx.navigation.navArgument("hotspot") { defaultValue = "false" },
+                androidx.navigation.navArgument("radar") { defaultValue = "false" }
             )
         ) { backStackEntry ->
             val name = backStackEntry.arguments?.getString("name") ?: "ProxiTap_Lobby"
             val pin = backStackEntry.arguments?.getString("pin") ?: ""
             val useHotspot = backStackEntry.arguments?.getString("hotspot") == "true"
+            val enableRadar = backStackEntry.arguments?.getString("radar") == "true"
             val activeManager = if (useHotspot) hotspotImpl else nanImpl
             val modeStr = if (useHotspot) "hotspot" else "nan"
             
@@ -143,8 +147,10 @@ fun ProxiTapApp() {
             if (servicePayload != null) {
                 val cleanPayload = servicePayload!!.removePrefix("PROXI:NAN:S:").removePrefix("PROXI:HOTSPOT:S:")
                 LobbyScreen(
-                    qrPayload = "https://pt.htsth.app/join?mode=$modeStr&service=$cleanPayload",
-                    onStartCallClick = { navController.navigate("call") }
+                    qrPayload = "https://pt.htsth.app/join?mode=$modeStr&radar=$enableRadar&service=$cleanPayload",
+                    onStartCallClick = { 
+                        navController.navigate("call?mode=$modeStr&radar=$enableRadar") 
+                    }
                 )
             } else {
                 androidx.compose.foundation.layout.Box(
@@ -164,17 +170,17 @@ fun ProxiTapApp() {
             )
         }
         composable(
-            route = "call?mode={mode}&service={service}&pin={pin}",
-            deepLinks = listOf(navDeepLink { uriPattern = "https://pt.htsth.app/join?mode={mode}&service={service}&pin={pin}" })
+            route = "call?mode={mode}&radar={radar}&service={service}&pin={pin}",
+            deepLinks = listOf(navDeepLink { uriPattern = "https://pt.htsth.app/join?mode={mode}&radar={radar}&service={service}&pin={pin}" })
         ) { backStackEntry ->
             val service = backStackEntry.arguments?.getString("service")
             val mode = backStackEntry.arguments?.getString("mode") ?: "nan"
+            val enableRadar = backStackEntry.arguments?.getString("radar") == "true"
             val activeManager = getNetworkManager(mode)
             
             val isDeepLinkJoin = service != null
             if (isDeepLinkJoin) isHost = false
 
-            var isMuted by remember { mutableStateOf(false) }
             var isReconnecting by remember { mutableStateOf(isDeepLinkJoin) }
 
             LaunchedEffect(service) {
@@ -209,17 +215,58 @@ fun ProxiTapApp() {
                 }
             }
 
+            // Radar Distance Tracking (Only for NAN mode when enabled)
+            val connectedNanPeers by nanImpl.connectedPeers.collectAsState()
+            LaunchedEffect(enableRadar, connectedNanPeers) {
+                if (enableRadar && mode == "nan") {
+                    distanceTracker.isTrackingEnabled = true
+                    distanceTracker.startTracking(connectedNanPeers)
+                } else {
+                    distanceTracker.stopTracking()
+                }
+            }
+
+            val peerDistances by distanceTracker.peerDistances.collectAsState()
+            // We only have one peer in V1 (Host->Peer or Peer->Host), so we take the first distance if available
+            val currentDistanceMeters = peerDistances.values.firstOrNull()
+
+            DisposableEffect(context) {
+                val receiver = object : android.content.BroadcastReceiver() {
+                    override fun onReceive(c: android.content.Context?, intent: android.content.Intent?) {
+                        if (intent?.action == "com.tylerhats.proxitap.CALL_ENDED") {
+                            nanImpl.stop()
+                            hotspotImpl.stop()
+                            navController.navigate("home") {
+                                popUpTo("home") { inclusive = true }
+                            }
+                        }
+                    }
+                }
+                val filter = android.content.IntentFilter("com.tylerhats.proxitap.CALL_ENDED")
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                    context.registerReceiver(receiver, filter, android.content.Context.RECEIVER_NOT_EXPORTED)
+                } else {
+                    context.registerReceiver(receiver, filter)
+                }
+                onDispose {
+                    context.unregisterReceiver(receiver)
+                }
+            }
+
             val isSpeaking by callService?.isSpeaking?.collectAsState() ?: remember { mutableStateOf(false) }
+            val isMuted by callService?.isMuted?.collectAsState() ?: remember { mutableStateOf(false) }
 
             CallScreen(
                 isHost = isHost,
                 isMuted = isMuted,
                 isSpeaking = isSpeaking,
+                distanceMeters = currentDistanceMeters,
                 isReconnecting = isReconnecting,
-                onMuteToggle = { isMuted = !isMuted },
+                onMuteToggle = { callService?.toggleMute() },
                 onEndCallClick = { 
                     nanImpl.stop()
                     hotspotImpl.stop()
+                    distanceTracker.stopTracking()
                     val intent = android.content.Intent(context, com.tylerhats.proxitap.audio.CallService::class.java)
                     context.stopService(intent)
                     navController.navigate("home") {

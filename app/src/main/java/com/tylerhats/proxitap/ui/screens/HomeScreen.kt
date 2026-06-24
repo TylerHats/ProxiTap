@@ -9,7 +9,7 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 fun HomeScreen(
-    onHostClick: (String, String?, Boolean, Boolean) -> Unit,
+    onHostClick: (String, String?, Boolean, Boolean, Boolean) -> Unit,
     onJoinClick: () -> Unit,
     onSearchAreaClick: () -> Unit
 ) {
@@ -17,6 +17,7 @@ fun HomeScreen(
     var pin by remember { mutableStateOf("") }
     var useHotspot by remember { mutableStateOf(false) }
     var forceRnnoise by remember { mutableStateOf(true) }
+    var enableRadar by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -74,8 +75,28 @@ fun HomeScreen(
             Text("Use Local Hotspot Mode", style = MaterialTheme.typography.bodyLarge)
             Switch(
                 checked = useHotspot,
-                onCheckedChange = { useHotspot = it }
+                onCheckedChange = { 
+                    useHotspot = it
+                    if (useHotspot) enableRadar = false // Radar requires NAN mode
+                }
             )
+        }
+
+        if (!useHotspot) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column {
+                    Text("Enable Distance Radar", style = MaterialTheme.typography.bodyLarge)
+                    Text("Requires Wi-Fi RTT. Uses more battery.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Switch(
+                    checked = enableRadar,
+                    onCheckedChange = { enableRadar = it }
+                )
+            }
         }
 
         Row(
@@ -95,7 +116,7 @@ fun HomeScreen(
         Button(
             onClick = { 
                 val finalName = lobbyName.takeIf { it.isNotBlank() } ?: "ProxiTap_Lobby_${(100..999).random()}"
-                onHostClick(finalName, pin.takeIf { it.isNotBlank() }, useHotspot, forceRnnoise) 
+                onHostClick(finalName, pin.takeIf { it.isNotBlank() }, useHotspot, forceRnnoise, enableRadar) 
             },
             modifier = Modifier.fillMaxWidth().height(56.dp)
         ) {

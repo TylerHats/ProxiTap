@@ -11,6 +11,9 @@ import android.net.wifi.aware.*
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.util.UUID
 import kotlin.coroutines.resume
@@ -30,6 +33,9 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
 
     private val DISCOVERY_SERVICE_NAME = "ProxiTap_Discovery"
     private var currentSessionId: String = ""
+
+    private val _connectedPeers = MutableStateFlow<List<PeerHandle>>(emptyList())
+    val connectedPeers: StateFlow<List<PeerHandle>> = _connectedPeers.asStateFlow()
 
     @SuppressLint("MissingPermission")
     override suspend fun startHosting(lobbyName: String, hasPin: Boolean): String = suspendCancellableCoroutine { continuation ->
@@ -90,6 +96,7 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
         }
         peerNetworkCallback = null
         localHostIpv6 = null
+        _connectedPeers.value = emptyList()
     }
 
     @SuppressLint("MissingPermission")
@@ -194,6 +201,7 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
             override fun onAvailable(network: Network) {
                 Log.d("NanImpl", "Host Data Path Established with Peer!")
                 connectivityManager.bindProcessToNetwork(network)
+                _connectedPeers.value = _connectedPeers.value + peerHandle
             }
         }
         connectivityManager.requestNetwork(networkRequest, callback)
@@ -224,6 +232,7 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
             override fun onAvailable(network: Network) {
                 Log.d("NanImpl", "Peer Data Path Established!")
                 connectivityManager.bindProcessToNetwork(network)
+                _connectedPeers.value = _connectedPeers.value + peerHandle
                 if (continuation.isActive) {
                     continuation.resume(true)
                 }
