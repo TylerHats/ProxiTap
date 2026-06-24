@@ -64,7 +64,7 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         
         val nsEnabled = prefs.getBoolean("ns_enabled", true)
         val aecEnabled = prefs.getBoolean("aec_enabled", true)
-        val pttEnabled = prefs.getBoolean("hardware_ptt", true)
+        val pttEnabled = prefs.getBoolean("hardware_ptt", false) // Default OFF
         val useBluetoothMic = prefs.getBoolean("bluetooth_mic", true)
 
         if (useBluetoothMic) {
@@ -132,7 +132,7 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                 webRtcClient.isAcousticEchoCancellationEnabled = sharedPreferences.getBoolean(key, true)
             }
             "hardware_ptt" -> {
-                hardwarePttManager?.isHardwarePttEnabled = sharedPreferences.getBoolean(key, true)
+                hardwarePttManager?.isHardwarePttEnabled = sharedPreferences.getBoolean(key, false)
             }
             "bluetooth_mic" -> {
                 val useBluetooth = sharedPreferences.getBoolean(key, true)

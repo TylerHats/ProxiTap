@@ -19,7 +19,7 @@ fun SettingsScreen(
     var nsEnabled by remember { mutableStateOf(prefs.getBoolean("ns_enabled", true)) }
     var aecEnabled by remember { mutableStateOf(prefs.getBoolean("aec_enabled", true)) }
     var bluetoothMic by remember { mutableStateOf(prefs.getBoolean("bluetooth_mic", true)) }
-    var hardwarePtt by remember { mutableStateOf(prefs.getBoolean("hardware_ptt", true)) }
+    var hardwarePtt by remember { mutableStateOf(prefs.getBoolean("hardware_ptt", false)) } // Default OFF
 
     Column(
         modifier = Modifier.fillMaxSize().systemBarsPadding().padding(16.dp)
