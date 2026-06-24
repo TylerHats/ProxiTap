@@ -34,15 +34,14 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun ProxiTapApp() {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val navController = rememberNavController()
     var isHost by remember { mutableStateOf(false) }
     
-    val discoveredLobbies = remember {
-        mutableStateListOf(
-            DiscoveredLobby("Tyler's Lobby", false),
-            DiscoveredLobby("Secret Commute Channel", true)
-        )
-    }
+    val nanImpl = remember { com.tylerhats.proxitap.network.NanImpl(context) }
+    val webRtcClient = remember { com.tylerhats.proxitap.audio.WebRtcClient(context) }
+    
+    val discoveredLobbies = remember { mutableStateListOf<DiscoveredLobby>() }
 
     NavHost(navController = navController, startDestination = "home") {
         composable("home") {
@@ -57,6 +56,13 @@ fun ProxiTapApp() {
                 },
                 onSearchAreaClick = {
                     isHost = false
+                    discoveredLobbies.clear()
+                    nanImpl.discoverLobbies { name, isProtected, payload ->
+                        // Prevent duplicates
+                        if (discoveredLobbies.none { it.name == name }) {
+                            discoveredLobbies.add(DiscoveredLobby(name, isProtected, payload))
+                        }
+                    }
                     navController.navigate("serverList")
                 }
             )
@@ -65,7 +71,8 @@ fun ProxiTapApp() {
             ServerListScreen(
                 discoveredLobbies = discoveredLobbies,
                 onLobbyClick = { lobby ->
-                    navController.navigate("call?mode=nan&service=${lobby.name}&pin=")
+                    // Pass the full payload to the CallScreen route
+                    navController.navigate("call?mode=nan&service=${lobby.payload}&pin=")
                 },
                 onBackClick = { navController.popBackStack() }
             )
@@ -79,11 +86,32 @@ fun ProxiTapApp() {
         ) { backStackEntry ->
             val name = backStackEntry.arguments?.getString("name") ?: "ProxiTap_Lobby"
             val pin = backStackEntry.arguments?.getString("pin") ?: ""
-            val pinParam = if (pin.isNotBlank()) "&pin=$pin" else ""
-            LobbyScreen(
-                qrPayload = "https://pt.htsth.app/join?mode=nan&service=$name$pinParam",
-                onStartCallClick = { navController.navigate("call") }
-            )
+            
+            var servicePayload by remember { mutableStateOf<String?>(null) }
+            
+            LaunchedEffect(name, pin) {
+                try {
+                    servicePayload = nanImpl.startHosting(name, pin.isNotBlank())
+                } catch (e: Exception) {
+                    android.util.Log.e("MainActivity", "Failed to start hosting", e)
+                }
+            }
+
+            if (servicePayload != null) {
+                // Remove the PROXI:NAN:S: prefix for the deep link, if it exists
+                val cleanPayload = servicePayload!!.removePrefix("PROXI:NAN:S:")
+                LobbyScreen(
+                    qrPayload = "https://pt.htsth.app/join?mode=nan&service=$cleanPayload",
+                    onStartCallClick = { navController.navigate("call") }
+                )
+            } else {
+                androidx.compose.foundation.layout.Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = androidx.compose.ui.Alignment.Center
+                ) {
+                    androidx.compose.material3.CircularProgressIndicator()
+                }
+            }
         }
         composable("scanner") {
             ScannerScreen(
@@ -97,18 +125,42 @@ fun ProxiTapApp() {
             route = "call?mode={mode}&service={service}&pin={pin}",
             deepLinks = listOf(navDeepLink { uriPattern = "https://pt.htsth.app/join?mode={mode}&service={service}&pin={pin}" })
         ) { backStackEntry ->
-            val isDeepLinkJoin = backStackEntry.arguments?.getString("service") != null
+            val service = backStackEntry.arguments?.getString("service")
+            val isDeepLinkJoin = service != null
             if (isDeepLinkJoin) isHost = false
 
             var isMuted by remember { mutableStateOf(false) }
-            val isSpeaking by remember { mutableStateOf((0..1).random() == 1) }
+            var isSpeaking by remember { mutableStateOf(false) }
+            var isReconnecting by remember { mutableStateOf(isDeepLinkJoin) }
+
+            LaunchedEffect(service) {
+                if (isDeepLinkJoin && service != null) {
+                    try {
+                        // Reconstruct the payload the way NanImpl expects it
+                        val payload = "PROXI:NAN:S:$service"
+                        nanImpl.joinLobby(payload)
+                        isReconnecting = false
+                    } catch (e: Exception) {
+                        android.util.Log.e("MainActivity", "Failed to join lobby", e)
+                    }
+                }
+            }
+
+            LaunchedEffect(Unit) {
+                webRtcClient.startAudioLevelMonitoring { speaking ->
+                    isSpeaking = speaking
+                }
+            }
 
             CallScreen(
                 isHost = isHost,
                 isMuted = isMuted,
                 isSpeaking = isSpeaking,
+                isReconnecting = isReconnecting,
                 onMuteToggle = { isMuted = !isMuted },
                 onEndCallClick = { 
+                    nanImpl.stop()
+                    webRtcClient.dispose()
                     navController.navigate("home") {
                         popUpTo("home") { inclusive = true }
                     }

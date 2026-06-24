@@ -12,7 +12,8 @@ import androidx.compose.ui.unit.dp
 
 data class DiscoveredLobby(
     val name: String,
-    val isProtected: Boolean
+    val isProtected: Boolean,
+    val payload: String
 )
 
 @OptIn(ExperimentalMaterial3Api::class)

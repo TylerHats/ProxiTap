@@ -24,7 +24,7 @@ class HotspotImpl(private val context: Context) : LocalNetworkManager {
     private var peerNetworkCallback: ConnectivityManager.NetworkCallback? = null
 
     @SuppressLint("MissingPermission") // Permissions are requested in the UI layer
-    override suspend fun startHosting(): String = suspendCancellableCoroutine { continuation ->
+    override suspend fun startHosting(lobbyName: String, hasPin: Boolean): String = suspendCancellableCoroutine { continuation ->
         Log.d("HotspotImpl", "Starting LocalOnlyHotspot...")
         wifiManager.startLocalOnlyHotspot(object : WifiManager.LocalOnlyHotspotCallback() {
             override fun onStarted(reservation: WifiManager.LocalOnlyHotspotReservation?) {
@@ -51,6 +51,12 @@ class HotspotImpl(private val context: Context) : LocalNetworkManager {
             }
         }, Handler(Looper.getMainLooper()))
     }
+
+    override fun discoverLobbies(onLobbyFound: (String, Boolean, String) -> Unit) {
+        // Hotspot discovery not implemented yet
+    }
+
+    // old startHosting removed
 
     override fun stop() {
         Log.d("HotspotImpl", "Stopping Hotspot/Network...")

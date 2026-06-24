@@ -28,11 +28,11 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
 
     private var localHostIpv6: String? = null
 
-    // We will generate a random service name for the session
-    private val serviceNameBase = "ProxiTap_Lobby_"
+    private val DISCOVERY_SERVICE_NAME = "ProxiTap_Discovery"
+    private var currentSessionId: String = ""
 
     @SuppressLint("MissingPermission")
-    override suspend fun startHosting(): String = suspendCancellableCoroutine { continuation ->
+    override suspend fun startHosting(lobbyName: String, hasPin: Boolean): String = suspendCancellableCoroutine { continuation ->
         if (wifiAwareManager == null || !context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)) {
             continuation.resumeWithException(Exception("Wi-Fi Aware not supported on this device"))
             return@suspendCancellableCoroutine
@@ -43,29 +43,27 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
             return@suspendCancellableCoroutine
         }
 
-        val serviceName = serviceNameBase + UUID.randomUUID().toString().take(8)
+        currentSessionId = UUID.randomUUID().toString().take(8)
+        val serviceInfo = "$lobbyName|${if(hasPin) 1 else 0}|$currentSessionId"
 
         wifiAwareManager.attach(object : AttachCallback() {
             override fun onAttached(session: WifiAwareSession) {
                 awareSession = session
                 
                 val config = PublishConfig.Builder()
-                    .setServiceName(serviceName)
+                    .setServiceName(DISCOVERY_SERVICE_NAME)
+                    .setServiceSpecificInfo(serviceInfo.toByteArray())
                     .build()
 
                 session.publish(config, object : DiscoverySessionCallback() {
                     override fun onPublishStarted(session: PublishDiscoverySession) {
                         publishSession = session
-                        Log.d("NanImpl", "NAN Publish Started: $serviceName")
-                        
-                        // The payload for the QR code just needs the service name
-                        // A peer will scan this and subscribe to it
-                        val qrPayload = "PROXI:NAN:S:$serviceName"
+                        Log.d("NanImpl", "NAN Publish Started: $DISCOVERY_SERVICE_NAME")
+                        val qrPayload = "PROXI:NAN:S:$serviceInfo"
                         continuation.resume(qrPayload)
                     }
 
                     override fun onMessageReceived(peerHandle: PeerHandle, message: ByteArray) {
-                        // Peer has found us and requested a connection
                         Log.d("NanImpl", "Host received connection request from peer")
                         acceptPeerConnection(peerHandle)
                     }
@@ -95,6 +93,40 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
     }
 
     @SuppressLint("MissingPermission")
+    override fun discoverLobbies(onLobbyFound: (String, Boolean, String) -> Unit) {
+        if (wifiAwareManager == null || !wifiAwareManager.isAvailable) return
+
+        wifiAwareManager.attach(object : AttachCallback() {
+            override fun onAttached(session: WifiAwareSession) {
+                awareSession = session
+
+                val config = SubscribeConfig.Builder()
+                    .setServiceName(DISCOVERY_SERVICE_NAME)
+                    .build()
+
+                session.subscribe(config, object : DiscoverySessionCallback() {
+                    override fun onSubscribeStarted(session: SubscribeDiscoverySession) {
+                        subscribeSession = session
+                        Log.d("NanImpl", "Passive NAN Subscribe Started for Discovery")
+                    }
+
+                    override fun onServiceDiscovered(peerHandle: PeerHandle, serviceSpecificInfo: ByteArray, matchFilter: List<ByteArray>) {
+                        val infoString = String(serviceSpecificInfo)
+                        val parts = infoString.split("|")
+                        if (parts.size >= 2) {
+                            val lobbyName = parts[0]
+                            val isProtected = parts[1] == "1"
+                            Log.d("NanImpl", "Lobby Discovered: $lobbyName (Protected: $isProtected)")
+                            onLobbyFound(lobbyName, isProtected, infoString)
+                        }
+                    }
+                }, Handler(Looper.getMainLooper()))
+            }
+            override fun onAttachFailed() {}
+        }, Handler(Looper.getMainLooper()))
+    }
+
+    @SuppressLint("MissingPermission")
     override suspend fun joinLobby(payload: String): Boolean = suspendCancellableCoroutine { continuation ->
         if (wifiAwareManager == null) {
             continuation.resumeWithException(Exception("Wi-Fi Aware not supported"))
@@ -106,43 +138,51 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
             return@suspendCancellableCoroutine
         }
 
-        val serviceName = payload.removePrefix("PROXI:NAN:S:")
+        val targetServiceInfo = payload.removePrefix("PROXI:NAN:S:")
 
-        wifiAwareManager.attach(object : AttachCallback() {
-            override fun onAttached(session: WifiAwareSession) {
-                awareSession = session
+        subscribeSession?.close()
+        
+        val doSubscribe = { session: WifiAwareSession ->
+            val config = SubscribeConfig.Builder()
+                .setServiceName(DISCOVERY_SERVICE_NAME)
+                .build()
 
-                val config = SubscribeConfig.Builder()
-                    .setServiceName(serviceName)
-                    .build()
+            session.subscribe(config, object : DiscoverySessionCallback() {
+                override fun onSubscribeStarted(subSession: SubscribeDiscoverySession) {
+                    subscribeSession = subSession
+                    Log.d("NanImpl", "Targeted NAN Subscribe Started for: $targetServiceInfo")
+                }
 
-                session.subscribe(config, object : DiscoverySessionCallback() {
-                    override fun onSubscribeStarted(session: SubscribeDiscoverySession) {
-                        subscribeSession = session
-                        Log.d("NanImpl", "NAN Subscribe Started for: $serviceName")
-                    }
-
-                    override fun onServiceDiscovered(peerHandle: PeerHandle, serviceSpecificInfo: ByteArray, matchFilter: List<ByteArray>) {
-                        Log.d("NanImpl", "Lobby Discovered! Sending connection request to Host")
-                        // Send a dummy message to trigger the Host's onMessageReceived so it gets our PeerHandle
+                override fun onServiceDiscovered(peerHandle: PeerHandle, serviceSpecificInfo: ByteArray, matchFilter: List<ByteArray>) {
+                    val infoString = String(serviceSpecificInfo)
+                    if (infoString == targetServiceInfo) {
+                        Log.d("NanImpl", "Target Lobby Discovered! Sending connection request to Host")
                         subscribeSession?.sendMessage(peerHandle, 1, "CONNECT".toByteArray())
-                        
-                        // Now request the network
                         requestDataPathAsPeer(peerHandle, continuation)
                     }
-                }, Handler(Looper.getMainLooper()))
-            }
+                }
+            }, Handler(Looper.getMainLooper()))
+        }
 
-            override fun onAttachFailed() {
-                continuation.resumeWithException(Exception("Failed to attach to Wi-Fi Aware session"))
-            }
-        }, Handler(Looper.getMainLooper()))
+        if (awareSession == null) {
+            wifiAwareManager.attach(object : AttachCallback() {
+                override fun onAttached(session: WifiAwareSession) {
+                    awareSession = session
+                    doSubscribe(session)
+                }
+                override fun onAttachFailed() {
+                    continuation.resumeWithException(Exception("Failed to attach to Wi-Fi Aware session"))
+                }
+            }, Handler(Looper.getMainLooper()))
+        } else {
+            doSubscribe(awareSession!!)
+        }
     }
 
     @SuppressLint("MissingPermission")
     private fun acceptPeerConnection(peerHandle: PeerHandle) {
         val networkSpecifier = WifiAwareNetworkSpecifier.Builder(publishSession!!, peerHandle)
-            .setPmk("ProxiTapSecureKey123".toByteArray()) // Hardcoded for POC, in prod generate secure key via QR
+            .setPmk("ProxiTapSecureKey123".toByteArray())
             .build()
 
         val networkRequest = NetworkRequest.Builder()
@@ -153,7 +193,6 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 Log.d("NanImpl", "Host Data Path Established with Peer!")
-                // Host binds to this network to route its Ktor server over it
                 connectivityManager.bindProcessToNetwork(network)
             }
         }
@@ -193,9 +232,6 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
             override fun onLost(network: Network) {
                 super.onLost(network)
                 Log.w("NanImpl", "Peer Data Path LOST. Entering Reconnect State...")
-                // We do NOT close the SubscribeSession here. 
-                // We wait and rely on DiscoverySessionCallback to potentially re-discover if we come back in range.
-                // The UI layer (via ViewModel) will show the Reconnecting spinner.
             }
         }
         connectivityManager.requestNetwork(networkRequest, callback)
@@ -203,7 +239,6 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
     }
 
     override fun getLocalIpAddress(): String? {
-        // In NAN, peers connect to the host's IPv6 address
         return localHostIpv6
     }
 }

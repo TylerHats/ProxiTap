@@ -1,4 +1,7 @@
-# ProxiTap
+<div align="center">
+  <img src="assets/ProxiTapIcon.png" width="200" height="200" alt="ProxiTap Icon"/>
+  <h1>ProxiTap</h1>
+</div>
 
 ProxiTap is the ultimate, decentralized local network walkie-talkie for Android. Built for scenarios where cellular networks are unreliable or non-existent (like scootering on the open road), ProxiTap leverages the full power of modern Android hardware to keep you and your friends connected.
 
