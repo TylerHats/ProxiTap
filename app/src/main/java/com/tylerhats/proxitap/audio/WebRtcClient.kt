@@ -63,7 +63,7 @@ class WebRtcClient(private val context: Context) {
         val audioConstraints = MediaConstraints().apply {
             mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", isAcousticEchoCancellationEnabled.toString()))
             mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", isNoiseSuppressionEnabled.toString()))
-            mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "false"))
+            mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
             mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true"))
         }
 
@@ -75,6 +75,10 @@ class WebRtcClient(private val context: Context) {
 
     fun setMute(muted: Boolean) {
         localAudioTrack?.setEnabled(!muted)
+    }
+
+    fun hasPeerConnection(peerId: String): Boolean {
+        return peerConnections.containsKey(peerId)
     }
 
     fun createPeerConnection(peerId: String, signalingCallback: SignalingCallback) {
@@ -117,14 +121,39 @@ class WebRtcClient(private val context: Context) {
         }
     }
 
+    private fun mungeSdpForOpus(sdp: String): String {
+        return sdp.replace(Regex("a=fmtp:111(.*)"), "a=fmtp:111$1;usedtx=1;maxaveragebitrate=64000;stereo=0")
+    }
+
+    fun triggerIceRestart(peerId: String, signalingCallback: SignalingCallback) {
+        val pc = peerConnections[peerId] ?: return
+        Log.d("WebRtcClient", "Triggering ICE Restart for $peerId")
+        val constraints = MediaConstraints().apply {
+            mandatory.add(MediaConstraints.KeyValuePair("IceRestart", "true"))
+        }
+        pc.createOffer(object : SdpObserver {
+            override fun onCreateSuccess(sdp: SessionDescription?) {
+                if (sdp != null) {
+                    val munged = SessionDescription(sdp.type, mungeSdpForOpus(sdp.description))
+                    pc.setLocalDescription(this, munged)
+                    signalingCallback.onOfferCreated(peerId, munged.description)
+                }
+            }
+            override fun onSetSuccess() {}
+            override fun onCreateFailure(p0: String?) { Log.e("WebRtcClient", "ICE Restart Offer failed: $p0") }
+            override fun onSetFailure(p0: String?) {}
+        }, constraints)
+    }
+
     fun createOffer(peerId: String, signalingCallback: SignalingCallback) {
         val pc = peerConnections[peerId] ?: return
         Log.d("WebRtcClient", "Creating offer for $peerId")
         pc.createOffer(object : SdpObserver {
             override fun onCreateSuccess(sdp: SessionDescription?) {
                 if (sdp != null) {
-                    pc.setLocalDescription(this, sdp)
-                    signalingCallback.onOfferCreated(peerId, sdp.description)
+                    val munged = SessionDescription(sdp.type, mungeSdpForOpus(sdp.description))
+                    pc.setLocalDescription(this, munged)
+                    signalingCallback.onOfferCreated(peerId, munged.description)
                 }
             }
             override fun onSetSuccess() {}
@@ -144,8 +173,9 @@ class WebRtcClient(private val context: Context) {
                 pc.createAnswer(object : SdpObserver {
                     override fun onCreateSuccess(answerSdp: SessionDescription?) {
                         if (answerSdp != null) {
-                            pc.setLocalDescription(this, answerSdp)
-                            signalingCallback.onAnswerCreated(peerId, answerSdp.description)
+                            val munged = SessionDescription(answerSdp.type, mungeSdpForOpus(answerSdp.description))
+                            pc.setLocalDescription(this, munged)
+                            signalingCallback.onAnswerCreated(peerId, munged.description)
                         }
                     }
                     override fun onSetSuccess() {}

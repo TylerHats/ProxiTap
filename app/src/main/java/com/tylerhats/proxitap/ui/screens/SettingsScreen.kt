@@ -1,5 +1,7 @@
 package com.tylerhats.proxitap.ui.screens
 
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -19,7 +21,12 @@ fun SettingsScreen(
     var nsEnabled by remember { mutableStateOf(prefs.getBoolean("ns_enabled", true)) }
     var aecEnabled by remember { mutableStateOf(prefs.getBoolean("aec_enabled", true)) }
     var bluetoothMic by remember { mutableStateOf(prefs.getBoolean("bluetooth_mic", true)) }
-    var hardwarePtt by remember { mutableStateOf(prefs.getBoolean("hardware_ptt", false)) } // Default OFF
+    var hardwarePtt by remember { mutableStateOf(prefs.getBoolean("hardware_ptt", false)) }
+    var volumePtt by remember { mutableStateOf(prefs.getBoolean("volume_ptt", false)) }
+    var showVolumePttDialog by remember { mutableStateOf(false) }
+    
+    var opusDtx by remember { mutableStateOf(prefs.getBoolean("opus_dtx", true)) }
+    var opusBitrate by remember { mutableStateOf(prefs.getInt("opus_bitrate", 64000).toFloat()) }
 
     Column(
         modifier = Modifier.fillMaxSize().systemBarsPadding().padding(16.dp)
@@ -70,17 +77,63 @@ fun SettingsScreen(
             })
         }
 
-        Spacer(modifier = Modifier.height(32.dp))
-        Text("Experimental Features", style = MaterialTheme.typography.titleMedium)
+        Spacer(modifier = Modifier.height(16.dp))
         
-        var hardwarePtt by remember { mutableStateOf(false) }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column {
-                Text("Hardware Push-To-Talk")
+                Text("Opus DTX (Bandwidth Saver)")
+                Text(
+                    text = "Halts transmission during silence",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(checked = opusDtx, onCheckedChange = { 
+                opusDtx = it
+                prefs.edit().putBoolean("opus_dtx", it).apply()
+            })
+        }
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("Opus Bitrate (Quality)")
+                Text("${(opusBitrate / 1000).toInt()} kbps", color = MaterialTheme.colorScheme.primary)
+            }
+            Slider(
+                value = opusBitrate,
+                onValueChange = { 
+                    opusBitrate = it
+                    prefs.edit().putInt("opus_bitrate", it.toInt()).apply()
+                },
+                valueRange = 16000f..128000f,
+                steps = 6 // (128 - 16) / 6 = approx intervals
+            )
+            Text(
+                text = "Lower = more range/reliability. Higher = better audio.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        Spacer(modifier = Modifier.height(32.dp))
+        Text("Experimental Features", style = MaterialTheme.typography.titleMedium)
+        
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text("Bluetooth Button Push-To-Talk")
                 Text(
                     text = "Use earbud play/pause button to toggle mute",
                     style = MaterialTheme.typography.bodySmall,
@@ -91,6 +144,57 @@ fun SettingsScreen(
                 hardwarePtt = it
                 prefs.edit().putBoolean("hardware_ptt", it).apply()
             })
+        }
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Physical Volume Button PTT (Zello-style)")
+                Text(
+                    text = "Requires Accessibility Permissions",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(checked = volumePtt, onCheckedChange = { isChecked ->
+                if (isChecked) {
+                    showVolumePttDialog = true
+                } else {
+                    volumePtt = false
+                    prefs.edit().putBoolean("volume_ptt", false).apply()
+                }
+            })
+        }
+        
+        if (showVolumePttDialog) {
+            AlertDialog(
+                onDismissRequest = { showVolumePttDialog = false },
+                title = { Text("Accessibility Permission Required") },
+                text = { 
+                    Text("To intercept the physical volume buttons while the screen is locked, ProxiTap requires an Accessibility Service.\n\nYou will be redirected to Android Settings. Please find 'ProxiTap' in the Accessibility menu and enable it.") 
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showVolumePttDialog = false
+                        volumePtt = true
+                        prefs.edit().putBoolean("volume_ptt", true).apply()
+                        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                        context.startActivity(intent)
+                    }) {
+                        Text("Open Settings")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showVolumePttDialog = false }) {
+                        Text("Cancel")
+                    }
+                }
+            )
         }
         
         Spacer(modifier = Modifier.weight(1f))

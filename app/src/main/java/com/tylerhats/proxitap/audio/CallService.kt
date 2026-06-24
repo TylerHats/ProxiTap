@@ -4,9 +4,12 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.media.AudioManager
+import android.net.wifi.WifiManager
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
@@ -50,6 +53,8 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
     val isMuted: StateFlow<Boolean> = _isMuted
     
     private var hardwarePttManager: HardwarePttManager? = null
+    private var wifiLock: WifiManager.WifiLock? = null
+    private var pttReceiver: BroadcastReceiver? = null
 
     inner class LocalBinder : Binder() {
         fun getService(): CallService = this@CallService
@@ -66,6 +71,8 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         val aecEnabled = prefs.getBoolean("aec_enabled", true)
         val pttEnabled = prefs.getBoolean("hardware_ptt", false) // Default OFF
         val useBluetoothMic = prefs.getBoolean("bluetooth_mic", true)
+        val opusDtx = prefs.getBoolean("opus_dtx", true)
+        val opusBitrate = prefs.getInt("opus_bitrate", 64000)
 
         if (useBluetoothMic) {
             val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -76,6 +83,8 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         webRtcClient = WebRtcClient(this).apply {
             isNoiseSuppressionEnabled = nsEnabled
             isAcousticEchoCancellationEnabled = aecEnabled
+            opusDtxEnabled = opusDtx
+            opusBitrateBps = opusBitrate
             initWebRtcAndTracks()
         }
         
@@ -89,10 +98,37 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         }
         hardwarePttManager?.isHardwarePttEnabled = pttEnabled
         hardwarePttManager?.start()
+
+        // Acquire Wi-Fi Lock to prevent sleep during foreground call
+        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        wifiLock = wifiManager.createWifiLock(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) WifiManager.WIFI_MODE_FULL_LOW_LATENCY else WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+            "ProxiTap::CallServiceWifiLock"
+        )
+        wifiLock?.acquire()
+
+        // Register receiver for Volume PTT Accessibility Service
+        pttReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action == ACTION_SET_MUTE) {
+                    val mute = intent.getBooleanExtra("isMuted", false)
+                    _isMuted.value = mute
+                    webRtcClient.setMute(mute)
+                }
+            }
+        }
+        
+        val filter = IntentFilter(ACTION_SET_MUTE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(pttReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(pttReceiver, filter)
+        }
     }
 
     companion object {
         const val ACTION_END_CALL = "com.tylerhats.proxitap.action.END_CALL"
+        const val ACTION_SET_MUTE = "com.tylerhats.proxitap.action.SET_MUTE"
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -181,9 +217,14 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                         }
                     }
 
-                    webRtcClient.createPeerConnection(senderId, signalingCallback)
-                    // In a star topology, Host acts as SFU. It sends an offer to the new peer.
-                    webRtcClient.createOffer(senderId, signalingCallback)
+                    if (webRtcClient.hasPeerConnection(senderId)) {
+                        Log.d("CallService", "Peer $senderId already exists. Triggering ICE Restart.")
+                        webRtcClient.triggerIceRestart(senderId, signalingCallback)
+                    } else {
+                        webRtcClient.createPeerConnection(senderId, signalingCallback)
+                        // In a star topology, Host acts as SFU. It sends an offer to the new peer.
+                        webRtcClient.createOffer(senderId, signalingCallback)
+                    }
                 } 
                 else if (type == "ANSWER") {
                     webRtcClient.handleRemoteAnswer(senderId, json.getString("sdp"))
@@ -236,7 +277,11 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                 val senderId = "HOST" // Peers only connect directly to host in SFU
 
                 if (type == "OFFER") {
-                    webRtcClient.createPeerConnection(senderId, signalingCallback)
+                    if (!webRtcClient.hasPeerConnection(senderId)) {
+                        webRtcClient.createPeerConnection(senderId, signalingCallback)
+                    } else {
+                        Log.d("CallService", "Received new OFFER for existing peer. Processing as ICE Restart.")
+                    }
                     webRtcClient.handleRemoteOffer(senderId, json.getString("sdp"), signalingCallback)
                 }
                 else if (type == "ICE") {
@@ -256,6 +301,13 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
         prefs.unregisterOnSharedPreferenceChangeListener(this)
         
+        wifiLock?.let {
+            if (it.isHeld) it.release()
+        }
+        wifiLock = null
+
+        pttReceiver?.let { unregisterReceiver(it) }
+
         scope.cancel()
         webRtcClient.dispose()
         signalingServer?.stopServer()
