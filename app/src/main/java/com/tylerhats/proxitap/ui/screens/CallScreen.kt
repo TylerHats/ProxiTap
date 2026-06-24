@@ -221,12 +221,43 @@ fun CallScreen(
                 }
             }
             
+            var showExitConfirmation by remember { mutableStateOf(false) }
+
+            if (showExitConfirmation) {
+                AlertDialog(
+                    onDismissRequest = { showExitConfirmation = false },
+                    title = { Text(if (isHost) "End Call?" else "Leave Call?") },
+                    text = { 
+                        Text(
+                            if (isHost) "Ending the call will disconnect all participants and close the app."
+                            else "Are you sure you want to leave the call? This will close the app."
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                showExitConfirmation = false
+                                onEndCallClick()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                        ) {
+                            Text(if (isHost) "End Call" else "Leave")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showExitConfirmation = false }) {
+                            Text("Cancel")
+                        }
+                    }
+                )
+            }
+
             FloatingActionButton(
-                onClick = onEndCallClick,
+                onClick = { showExitConfirmation = true },
                 modifier = Modifier.size(80.dp),
                 containerColor = MaterialTheme.colorScheme.error
             ) {
-                Text("End Call", color = MaterialTheme.colorScheme.onError)
+                Text(if (isHost) "End Call" else "Leave", color = MaterialTheme.colorScheme.onError)
             }
         }
     }

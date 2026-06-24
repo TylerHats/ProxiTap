@@ -35,6 +35,8 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
     private val DISCOVERY_SERVICE_NAME = "ProxiTap_Discovery"
     private var currentSessionId: String = ""
     private var currentPin: String = ""
+    private var connectionRetryHandler: Handler? = null
+    private var connectionRetryRunnable: Runnable? = null
 
     private val _connectedPeers = MutableStateFlow<List<PeerHandle>>(emptyList())
     val connectedPeers: StateFlow<List<PeerHandle>> = _connectedPeers.asStateFlow()
@@ -74,8 +76,19 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
                     }
 
                     override fun onMessageReceived(peerHandle: PeerHandle, message: ByteArray) {
-                        Log.d("NanImpl", "Host received connection request from peer")
-                        acceptPeerConnection(peerHandle)
+                        val msgStr = String(message)
+                        Log.d("NanImpl", "Host received message from peer: $msgStr")
+                        if (msgStr == "CONNECT") {
+                            acceptPeerConnection(peerHandle)
+                        }
+                    }
+
+                    override fun onMessageSendSucceeded(messageId: Int) {
+                        Log.d("NanImpl", "Host message send succeeded: id=$messageId")
+                    }
+
+                    override fun onMessageSendFailed(messageId: Int) {
+                        Log.e("NanImpl", "Host message send failed: id=$messageId")
                     }
                 }, Handler(Looper.getMainLooper()))
             }
@@ -88,6 +101,7 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
 
     override fun stop() {
         Log.d("NanImpl", "Stopping NAN Session...")
+        stopConnectionRetryLoop()
         publishSession?.close()
         subscribeSession?.close()
         awareSession?.close()
@@ -96,9 +110,14 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
         awareSession = null
 
         peerNetworkCallback?.let {
-            connectivityManager.unregisterNetworkCallback(it)
+            try {
+                connectivityManager.unregisterNetworkCallback(it)
+            } catch (e: Exception) {}
         }
         peerNetworkCallback = null
+        try {
+            connectivityManager.bindProcessToNetwork(null)
+        } catch (e: Exception) {}
         localHostIpv6 = null
         _connectedPeers.value = emptyList()
     }
@@ -139,6 +158,14 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
                             onLobbyFound(lobbyName, isProtected, false, false, infoString)
                         }
                     }
+
+                    override fun onMessageSendSucceeded(messageId: Int) {
+                        Log.d("NanImpl", "Passive subscribe message send succeeded: id=$messageId")
+                    }
+
+                    override fun onMessageSendFailed(messageId: Int) {
+                        Log.e("NanImpl", "Passive subscribe message send failed: id=$messageId")
+                    }
                 }, Handler(Looper.getMainLooper()))
             }
             override fun onAttachFailed() {}
@@ -178,9 +205,25 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
                     val infoString = String(serviceSpecificInfo)
                     if (infoString == targetServiceInfo) {
                         Log.d("NanImpl", "Target Lobby Discovered! Sending connection request to Host")
-                        subscribeSession?.sendMessage(peerHandle, 1, "CONNECT".toByteArray())
+                        startConnectionRetryLoop(peerHandle)
+                    }
+                }
+
+                override fun onMessageReceived(peerHandle: PeerHandle, message: ByteArray) {
+                    val msgStr = String(message)
+                    Log.d("NanImpl", "Peer received message from host: $msgStr")
+                    if (msgStr == "ACCEPT") {
+                        Log.d("NanImpl", "Host accepted connection! Requesting Data Path...")
                         requestDataPathAsPeer(peerHandle, continuation)
                     }
+                }
+
+                override fun onMessageSendSucceeded(messageId: Int) {
+                    Log.d("NanImpl", "Active subscribe message send succeeded: id=$messageId")
+                }
+
+                override fun onMessageSendFailed(messageId: Int) {
+                    Log.e("NanImpl", "Active subscribe message send failed: id=$messageId")
                 }
             }, Handler(Looper.getMainLooper()))
         }
@@ -202,7 +245,20 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
 
     @SuppressLint("MissingPermission")
     private fun acceptPeerConnection(peerHandle: PeerHandle) {
-        val builder = WifiAwareNetworkSpecifier.Builder(publishSession!!, peerHandle)
+        val session = publishSession ?: run {
+            Log.e("NanImpl", "acceptPeerConnection failed: publishSession is null")
+            return
+        }
+        if (peerNetworkCallback != null) {
+            Log.d("NanImpl", "Connection request received, but requestNetwork is already active. Resending ACCEPT.")
+            try {
+                session.sendMessage(peerHandle, 2, "ACCEPT".toByteArray())
+            } catch (e: Exception) {
+                Log.e("NanImpl", "Failed to resend ACCEPT message", e)
+            }
+            return
+        }
+        val builder = WifiAwareNetworkSpecifier.Builder(session, peerHandle)
         if (currentPin.isNotBlank()) {
             builder.setPmk(currentPin.padEnd(32, '0').take(32).toByteArray())
         }
@@ -219,14 +275,59 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
                 connectivityManager.bindProcessToNetwork(network)
                 _connectedPeers.value = _connectedPeers.value + peerHandle
             }
+
+            override fun onLost(network: Network) {
+                super.onLost(network)
+                Log.w("NanImpl", "Host Data Path LOST.")
+                try {
+                    connectivityManager.bindProcessToNetwork(null)
+                } catch (e: Exception) {}
+                try {
+                    connectivityManager.unregisterNetworkCallback(this)
+                } catch (e: Exception) {}
+                if (peerNetworkCallback == this) {
+                    peerNetworkCallback = null
+                }
+            }
+
+            override fun onUnavailable() {
+                super.onUnavailable()
+                Log.e("NanImpl", "Host Data Path UNAVAILABLE.")
+                try {
+                    connectivityManager.bindProcessToNetwork(null)
+                } catch (e: Exception) {}
+                try {
+                    connectivityManager.unregisterNetworkCallback(this)
+                } catch (e: Exception) {}
+                if (peerNetworkCallback == this) {
+                    peerNetworkCallback = null
+                }
+            }
         }
         connectivityManager.requestNetwork(networkRequest, callback)
         peerNetworkCallback = callback
+
+        try {
+            session.sendMessage(peerHandle, 2, "ACCEPT".toByteArray())
+        } catch (e: Exception) {
+            Log.e("NanImpl", "Failed to send ACCEPT message", e)
+        }
     }
 
     @SuppressLint("MissingPermission")
     private fun requestDataPathAsPeer(peerHandle: PeerHandle, continuation: kotlinx.coroutines.CancellableContinuation<Boolean>) {
-        val builder = WifiAwareNetworkSpecifier.Builder(subscribeSession!!, peerHandle)
+        if (peerNetworkCallback != null) {
+            Log.d("NanImpl", "requestDataPathAsPeer called, but network request is already active.")
+            return
+        }
+        val session = subscribeSession ?: run {
+            Log.e("NanImpl", "requestDataPathAsPeer failed: subscribeSession is null")
+            if (continuation.isActive) {
+                continuation.resume(false)
+            }
+            return
+        }
+        val builder = WifiAwareNetworkSpecifier.Builder(session, peerHandle)
         if (currentPin.isNotBlank()) {
             builder.setPmk(currentPin.padEnd(32, '0').take(32).toByteArray())
         }
@@ -262,6 +363,7 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
 
             override fun onAvailable(network: Network) {
                 Log.d("NanImpl", "Peer Data Path Established!")
+                stopConnectionRetryLoop()
                 connectivityManager.bindProcessToNetwork(network)
                 _connectedPeers.value = _connectedPeers.value + peerHandle
                 isAvailable = true
@@ -271,6 +373,16 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
             override fun onLost(network: Network) {
                 super.onLost(network)
                 Log.w("NanImpl", "Peer Data Path LOST.")
+                stopConnectionRetryLoop()
+                try {
+                    connectivityManager.bindProcessToNetwork(null)
+                } catch (e: Exception) {}
+                try {
+                    connectivityManager.unregisterNetworkCallback(this)
+                } catch (e: Exception) {}
+                if (peerNetworkCallback == this) {
+                    peerNetworkCallback = null
+                }
                 if (continuation.isActive) {
                     continuation.resume(false)
                 }
@@ -279,6 +391,16 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
             override fun onUnavailable() {
                 super.onUnavailable()
                 Log.e("NanImpl", "Peer Data Path UNAVAILABLE.")
+                stopConnectionRetryLoop()
+                try {
+                    connectivityManager.bindProcessToNetwork(null)
+                } catch (e: Exception) {}
+                try {
+                    connectivityManager.unregisterNetworkCallback(this)
+                } catch (e: Exception) {}
+                if (peerNetworkCallback == this) {
+                    peerNetworkCallback = null
+                }
                 if (continuation.isActive) {
                     continuation.resume(false)
                 }
@@ -286,6 +408,30 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
         }
         connectivityManager.requestNetwork(networkRequest, callback)
         peerNetworkCallback = callback
+    }
+
+    private fun startConnectionRetryLoop(peerHandle: PeerHandle) {
+        stopConnectionRetryLoop()
+        val handler = Handler(Looper.getMainLooper())
+        connectionRetryHandler = handler
+        val runnable = object : Runnable {
+            override fun run() {
+                if (subscribeSession != null) {
+                    Log.d("NanImpl", "Sending/retrying connection request to Host...")
+                    subscribeSession?.sendMessage(peerHandle, 1, "CONNECT".toByteArray())
+                    handler.postDelayed(this, 1000)
+                }
+            }
+        }
+        connectionRetryRunnable = runnable
+        handler.post(runnable)
+    }
+
+    private fun stopConnectionRetryLoop() {
+        Log.d("NanImpl", "Stopping connection retry loop")
+        connectionRetryRunnable?.let { connectionRetryHandler?.removeCallbacks(it) }
+        connectionRetryRunnable = null
+        connectionRetryHandler = null
     }
 
     override fun getLocalIpAddress(): String? {

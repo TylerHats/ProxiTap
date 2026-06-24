@@ -43,7 +43,7 @@ class MainActivity : ComponentActivity() {
 fun ProxiTapApp() {
     val context = androidx.compose.ui.platform.LocalContext.current
     val navController = rememberNavController()
-    var isHost by remember { mutableStateOf(false) }
+    var isHost by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     var hostQrPayload by remember { mutableStateOf<String?>(null) }
     
     val nanImpl = remember { com.tylerhats.proxitap.network.NanImpl(context) }
@@ -283,6 +283,7 @@ fun ProxiTapApp() {
             val payload = backStackEntry.arguments?.getString("payload")
             LobbyScreen(
                 qrPayload = payload ?: "",
+                buttonText = "Return to Call",
                 onStartCallClick = { navController.popBackStack() }
             )
         }
@@ -377,9 +378,7 @@ fun ProxiTapApp() {
                 val receiver = object : android.content.BroadcastReceiver() {
                     override fun onReceive(c: android.content.Context?, intent: android.content.Intent?) {
                         if (intent?.action == "com.tylerhats.proxitap.CALL_ENDED") {
-                            navController.navigate("home") {
-                                popUpTo("home") { inclusive = true }
-                            }
+                            (context as? android.app.Activity)?.finishAffinity()
                         }
                     }
                 }
@@ -399,8 +398,9 @@ fun ProxiTapApp() {
             val participants by (callService?.participants ?: kotlinx.coroutines.flow.MutableStateFlow(emptyList())).collectAsState()
             val stats by (callService?.connectionStats ?: kotlinx.coroutines.flow.MutableStateFlow(emptyMap())).collectAsState()
             
+            val isActualHost = callService?.isHostSignaling ?: isHost
             CallScreen(
-                isHost = isHost,
+                isHost = isActualHost,
                 isMuted = isMuted,
                 isSpeaking = isSpeaking,
                 distanceMeters = currentDistanceMeters,
@@ -415,7 +415,7 @@ fun ProxiTapApp() {
                         popUpTo("home") { inclusive = true }
                     }
                 },
-                onSettingsClick = { navController.navigate("settings?media=$isMediaLobby") },
+                onSettingsClick = { navController.navigate("settings?media=$isMediaLobby&host=$isActualHost") },
                 onShowQrCodeClick = { 
                     hostQrPayload?.let { payload ->
                         navController.navigate("qr?payload=${java.net.URLEncoder.encode(payload, "UTF-8")}")
@@ -424,13 +424,16 @@ fun ProxiTapApp() {
             )
         }
         composable(
-            route = "settings?media={media}",
+            route = "settings?media={media}&host={host}",
             arguments = listOf(
-                androidx.navigation.navArgument("media") { defaultValue = "false" }
+                androidx.navigation.navArgument("media") { defaultValue = "false" },
+                androidx.navigation.navArgument("host") { defaultValue = "true" }
             )
         ) { backStackEntry ->
             val isMediaRoute = backStackEntry.arguments?.getString("media") == "true"
+            val isHostRoute = backStackEntry.arguments?.getString("host") == "true"
             SettingsScreen(
+                isHost = isHostRoute,
                 isMediaLobby = isMediaRoute,
                 onBackClick = { navController.popBackStack() }
             )

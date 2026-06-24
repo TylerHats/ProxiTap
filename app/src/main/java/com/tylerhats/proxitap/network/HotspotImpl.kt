@@ -73,9 +73,14 @@ class HotspotImpl(private val context: Context) : LocalNetworkManager {
         hotspotReservation = null
         
         peerNetworkCallback?.let {
-            connectivityManager.unregisterNetworkCallback(it)
+            try {
+                connectivityManager.unregisterNetworkCallback(it)
+            } catch (e: Exception) {}
         }
         peerNetworkCallback = null
+        try {
+            connectivityManager.bindProcessToNetwork(null)
+        } catch (e: Exception) {}
         hostIpAddress = null
     }
 
@@ -158,9 +163,23 @@ class HotspotImpl(private val context: Context) : LocalNetworkManager {
                 checkAndResume()
             }
 
+            override fun onLost(network: Network) {
+                super.onLost(network)
+                Log.w("HotspotImpl", "Network lost")
+                try {
+                    connectivityManager.bindProcessToNetwork(null)
+                } catch (e: Exception) {}
+                if (continuation.isActive) {
+                    continuation.resume(false)
+                }
+            }
+
             override fun onUnavailable() {
                 super.onUnavailable()
                 Log.e("HotspotImpl", "Network unavailable")
+                try {
+                    connectivityManager.bindProcessToNetwork(null)
+                } catch (e: Exception) {}
                 if (continuation.isActive) {
                     continuation.resume(false)
                 }

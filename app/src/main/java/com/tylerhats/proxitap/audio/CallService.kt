@@ -85,7 +85,8 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
     private var myIcePort: Int? = null
     private var remoteIcePort: Int? = null
     private var udpProxy: UdpProxy? = null
-    private var isHostSignaling = false
+    var isHostSignaling = false
+        private set
     
     // Network Lifecycle decoupled from UI
     lateinit var nanImpl: com.tylerhats.proxitap.network.NanImpl
@@ -366,14 +367,20 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
 
         when (key) {
             "ns_enabled" -> {
+                val enabled = sharedPreferences.getBoolean(key, true)
                 if (::webRtcClient.isInitialized) {
-                    webRtcClient.isNoiseSuppressionEnabled = sharedPreferences.getBoolean(key, true)
+                    webRtcClient.isNoiseSuppressionEnabled = enabled
+                    webRtcClient.updateAudioConstraints(enabled, webRtcClient.isAcousticEchoCancellationEnabled)
                 }
+                if (isHostSignaling) broadcastSettings()
             }
             "aec_enabled" -> {
+                val enabled = sharedPreferences.getBoolean(key, true)
                 if (::webRtcClient.isInitialized) {
-                    webRtcClient.isAcousticEchoCancellationEnabled = sharedPreferences.getBoolean(key, true)
+                    webRtcClient.isAcousticEchoCancellationEnabled = enabled
+                    webRtcClient.updateAudioConstraints(webRtcClient.isNoiseSuppressionEnabled, enabled)
                 }
+                if (isHostSignaling) broadcastSettings()
             }
             "hardware_ptt" -> {
                 hardwarePttManager?.isHardwarePttEnabled = sharedPreferences.getBoolean(key, false)
@@ -384,15 +391,49 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                 // Routing will update automatically via WebRTC context
             }
             "opus_dtx" -> {
+                val enabled = sharedPreferences.getBoolean(key, true)
                 if (::webRtcClient.isInitialized) {
-                    webRtcClient.opusDtxEnabled = sharedPreferences.getBoolean(key, true)
+                    webRtcClient.opusDtxEnabled = enabled
                 }
+                if (isHostSignaling) broadcastSettings()
             }
             "opus_bitrate" -> {
+                val bitrate = sharedPreferences.getInt(key, 64000)
                 if (::webRtcClient.isInitialized) {
-                    webRtcClient.opusBitrateBps = sharedPreferences.getInt(key, 64000)
+                    webRtcClient.opusBitrateBps = bitrate
+                    webRtcClient.applyAudioSettingsToActiveConnections()
+                }
+                if (isHostSignaling) broadcastSettings()
+            }
+            "display_name" -> {
+                val newName = sharedPreferences.getString(key, Build.MODEL) ?: Build.MODEL
+                if (isHostSignaling) {
+                    scope.launch {
+                        signalingServer?.updateHostName(newName)
+                    }
+                } else {
+                    val updateMsg = JSONObject().apply {
+                        put("type", "UPDATE_NAME")
+                        put("name", newName)
+                    }
+                    signalingClient?.sendMessage(updateMsg)
                 }
             }
+        }
+    }
+
+    private fun broadcastSettings() {
+        if (!isHostSignaling) return
+        val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
+        val settingsMsg = JSONObject().apply {
+            put("type", "SETTINGS")
+            put("opusBitrate", prefs.getInt("opus_bitrate", 64000))
+            put("opusDtx", prefs.getBoolean("opus_dtx", true))
+            put("nsEnabled", prefs.getBoolean("ns_enabled", true))
+            put("aecEnabled", prefs.getBoolean("aec_enabled", true))
+        }
+        scope.launch {
+            signalingServer?.broadcastMessage(settingsMsg)
         }
     }
 
@@ -405,9 +446,13 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             }
             
             isHostSignaling = true
-
-        signalingServer = SignalingServer()
-        signalingServer?.startServer(port)
+            
+            val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
+            val hostDisplayName = prefs.getString("display_name", Build.MODEL) ?: Build.MODEL
+            signalingServer = SignalingServer().apply {
+                hostName = hostDisplayName
+            }
+            signalingServer?.startServer(port)
 
         scope.launch {
             signalingServer?.incomingMessages?.collect { (senderId, json) ->
@@ -478,13 +523,20 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                 else if (type == "PARTICIPANTS_UPDATE") {
                     val array = json.getJSONArray("participants")
                     val list = mutableListOf<String>()
-                    val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
-                    val hostName = prefs.getString("display_name", Build.MODEL) ?: Build.MODEL
-                    list.add("$hostName (Host)")
-                    
                     for (i in 0 until array.length()) {
                         val p = array.getJSONObject(i)
-                        list.add(p.getString("name"))
+                        val name = p.getString("name")
+                        val id = p.getString("id")
+                        val isHostParticipant = p.optBoolean("isHost", false)
+                        
+                        val isMe = (id == myPeerId) || (isHostSignaling && id == "HOST")
+                        val suffix = when {
+                            isMe && isHostParticipant -> " (You, Host)"
+                            isMe -> " (You)"
+                            isHostParticipant -> " (Host)"
+                            else -> ""
+                        }
+                        list.add("$name$suffix")
                     }
                     _participants.value = list
                 }
@@ -590,12 +642,17 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                         val p = array.getJSONObject(i)
                         val name = p.getString("name")
                         val id = p.getString("id")
-                        if (id == myPeerId) list.add("$name (You)") else list.add(name)
+                        val isHostParticipant = p.optBoolean("isHost", false)
+                        
+                        val isMe = (id == myPeerId) || (isHostSignaling && id == "HOST")
+                        val suffix = when {
+                            isMe && isHostParticipant -> " (You, Host)"
+                            isMe -> " (You)"
+                            isHostParticipant -> " (Host)"
+                            else -> ""
+                        }
+                        list.add("$name$suffix")
                     }
-                    val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
-                    val hostName = prefs.getString("host_display_name", "Host")
-                    // Wait, we don't have host display name reliably on peer unless host sends it
-                    list.add(0, "Host")
                     _participants.value = list
                 }
                 else if (type == "SETTINGS" && !isMediaLobby) {
@@ -612,6 +669,18 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                     
                     // The PeerConnection will use these updated parameters when modifying local tracks/sender
                     webRtcClient.applyAudioSettingsToActiveConnections()
+                    webRtcClient.updateAudioConstraints(ns, aec)
+
+                    // Write to local prefs (so peer's SettingsScreen UI updates)
+                    val localPrefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
+                    localPrefs.unregisterOnSharedPreferenceChangeListener(this@CallService)
+                    localPrefs.edit()
+                        .putInt("opus_bitrate", bitrate)
+                        .putBoolean("opus_dtx", dtx)
+                        .putBoolean("ns_enabled", ns)
+                        .putBoolean("aec_enabled", aec)
+                        .apply()
+                    localPrefs.registerOnSharedPreferenceChangeListener(this@CallService)
                 }
                 else if (type == "OFFER" && !isMediaLobby) {
                     val senderId = "HOST"
@@ -657,7 +726,13 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         Log.d("CallService", "Ending call")
         if (!isHostSignaling) {
             val msg = JSONObject().apply { put("type", "LEAVE") }
-            signalingClient?.sendMessage(msg)
+            try {
+                kotlinx.coroutines.runBlocking {
+                    signalingClient?.sendMessageSuspend(msg)
+                }
+            } catch (e: Exception) {
+                Log.e("CallService", "Failed to send LEAVE message", e)
+            }
         }
 
         _isSpeaking.value = false
@@ -736,6 +811,14 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             stopForeground(true)
         }
         stopSelf()
+
+        // Force kill the process after a brief delay to ensure app closes fully and no sticky states remain
+        Thread {
+            try {
+                Thread.sleep(300)
+            } catch (e: InterruptedException) {}
+            android.os.Process.killProcess(android.os.Process.myPid())
+        }.start()
     }
 
     override fun onDestroy() {

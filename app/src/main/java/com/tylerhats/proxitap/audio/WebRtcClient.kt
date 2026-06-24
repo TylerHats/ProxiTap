@@ -310,4 +310,48 @@ class WebRtcClient(private val context: Context) {
             }
         }
     }
+
+    fun updateAudioConstraints(nsEnabled: Boolean, aecEnabled: Boolean) {
+        val factory = peerConnectionFactory ?: return
+        Log.d("WebRtcClient", "Re-creating local audio track with NS=$nsEnabled, AEC=$aecEnabled")
+        
+        val oldTrack = localAudioTrack
+        val oldSource = localAudioSource
+        
+        val audioConstraints = MediaConstraints().apply {
+            mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", aecEnabled.toString()))
+            mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", nsEnabled.toString()))
+            mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true"))
+        }
+        
+        val newSource = factory.createAudioSource(audioConstraints)
+        val newTrack = factory.createAudioTrack("LOCAL_AUDIO_TRACK", newSource)
+        newTrack.setEnabled(true)
+        
+        localAudioSource = newSource
+        localAudioTrack = newTrack
+        
+        // Update track on all peer connection senders
+        for (pc in peerConnections.values) {
+            for (sender in pc.senders) {
+                if (sender.track()?.kind() == "audio") {
+                    sender.setTrack(newTrack, false)
+                }
+            }
+        }
+        
+        // Clean up old track and source safely
+        try {
+            oldTrack?.setEnabled(false)
+            oldTrack?.dispose()
+        } catch (e: Exception) {
+            Log.e("WebRtcClient", "Error disposing old audio track", e)
+        }
+        try {
+            oldSource?.dispose()
+        } catch (e: Exception) {
+            Log.e("WebRtcClient", "Error disposing old audio source", e)
+        }
+    }
 }

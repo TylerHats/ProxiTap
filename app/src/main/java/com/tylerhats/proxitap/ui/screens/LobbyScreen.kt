@@ -37,6 +37,7 @@ fun generateQrCode(text: String, size: Int): Bitmap? {
 @Composable
 fun LobbyScreen(
     qrPayload: String,
+    buttonText: String = "Start Call",
     onStartCallClick: () -> Unit
 ) {
     var qrBitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -109,7 +110,7 @@ fun LobbyScreen(
                 onClick = onStartCallClick,
                 modifier = Modifier.weight(1f).height(56.dp)
             ) {
-                Text("Start Call")
+                Text(buttonText)
             }
         }
     }

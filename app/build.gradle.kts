@@ -21,6 +21,16 @@ android {
         }
     }
 
+    androidResources {
+        noCompress += "so"
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -72,7 +82,7 @@ dependencies {
     implementation("com.google.zxing:core:3.5.3")
 
     // CameraX & MLKit for QR Scanning
-    val cameraxVersion = "1.3.3"
+    val cameraxVersion = "1.4.2"
     implementation("androidx.camera:camera-core:$cameraxVersion")
     implementation("androidx.camera:camera-camera2:$cameraxVersion")
     implementation("androidx.camera:camera-lifecycle:$cameraxVersion")

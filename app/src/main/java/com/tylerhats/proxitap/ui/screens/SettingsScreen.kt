@@ -13,6 +13,7 @@ import androidx.compose.ui.platform.LocalContext
 
 @Composable
 fun SettingsScreen(
+    isHost: Boolean = true,
     isMediaLobby: Boolean = false,
     onBackClick: () -> Unit
 ) {
@@ -29,6 +30,24 @@ fun SettingsScreen(
     var opusDtx by remember { mutableStateOf(prefs.getBoolean("opus_dtx", true)) }
     var opusBitrate by remember { mutableStateOf(prefs.getInt("opus_bitrate", 64000).toFloat()) }
     var displayName by remember { mutableStateOf(prefs.getString("display_name", android.os.Build.MODEL) ?: android.os.Build.MODEL) }
+
+    DisposableEffect(prefs) {
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            when (key) {
+                "ns_enabled" -> nsEnabled = prefs.getBoolean(key, true)
+                "aec_enabled" -> aecEnabled = prefs.getBoolean(key, true)
+                "bluetooth_mic" -> bluetoothMic = prefs.getBoolean(key, true)
+                "opus_dtx" -> opusDtx = prefs.getBoolean(key, true)
+                "opus_bitrate" -> opusBitrate = prefs.getInt(key, 64000).toFloat()
+                "hardware_ptt" -> hardwarePtt = prefs.getBoolean(key, false)
+                "volume_ptt" -> volumePtt = prefs.getBoolean(key, false)
+            }
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        onDispose {
+            prefs.unregisterOnSharedPreferenceChangeListener(listener)
+        }
+    }
 
     Column(
         modifier = Modifier.fillMaxSize().systemBarsPadding().padding(16.dp)
@@ -70,10 +89,14 @@ fun SettingsScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("Noise Suppression (NS)")
-            Switch(checked = nsEnabled, onCheckedChange = { 
-                nsEnabled = it
-                prefs.edit().putBoolean("ns_enabled", it).apply()
-            })
+            Switch(
+                checked = nsEnabled,
+                onCheckedChange = { 
+                    nsEnabled = it
+                    prefs.edit().putBoolean("ns_enabled", it).apply()
+                },
+                enabled = isHost
+            )
         }
         
         Row(
@@ -82,10 +105,14 @@ fun SettingsScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("Acoustic Echo Cancellation (AEC)")
-            Switch(checked = aecEnabled, onCheckedChange = { 
-                aecEnabled = it
-                prefs.edit().putBoolean("aec_enabled", it).apply()
-            })
+            Switch(
+                checked = aecEnabled,
+                onCheckedChange = { 
+                    aecEnabled = it
+                    prefs.edit().putBoolean("aec_enabled", it).apply()
+                },
+                enabled = isHost
+            )
         }
         
         Row(
@@ -101,10 +128,14 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Switch(checked = bluetoothMic, onCheckedChange = { 
-                bluetoothMic = it
-                prefs.edit().putBoolean("bluetooth_mic", it).apply()
-            })
+            Switch(
+                checked = bluetoothMic,
+                onCheckedChange = { 
+                    bluetoothMic = it
+                    prefs.edit().putBoolean("bluetooth_mic", it).apply()
+                },
+                enabled = isHost
+            )
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -122,10 +153,14 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Switch(checked = opusDtx, onCheckedChange = { 
-                opusDtx = it
-                prefs.edit().putBoolean("opus_dtx", it).apply()
-            })
+            Switch(
+                checked = opusDtx,
+                onCheckedChange = { 
+                    opusDtx = it
+                    prefs.edit().putBoolean("opus_dtx", it).apply()
+                },
+                enabled = isHost
+            )
         }
         
         Spacer(modifier = Modifier.height(16.dp))
@@ -145,7 +180,8 @@ fun SettingsScreen(
                     prefs.edit().putInt("opus_bitrate", it.toInt()).apply()
                 },
                 valueRange = 16000f..128000f,
-                steps = 6 // (128 - 16) / 6 = approx intervals
+                steps = 6, // (128 - 16) / 6 = approx intervals
+                enabled = isHost
             )
             Text(
                 text = "Lower = more range/reliability. Higher = better audio.",
@@ -170,10 +206,14 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Switch(checked = hardwarePtt, onCheckedChange = { 
-                hardwarePtt = it
-                prefs.edit().putBoolean("hardware_ptt", it).apply()
-            })
+            Switch(
+                checked = hardwarePtt,
+                onCheckedChange = { 
+                    hardwarePtt = it
+                    prefs.edit().putBoolean("hardware_ptt", it).apply()
+                },
+                enabled = isHost
+            )
         }
         
         Spacer(modifier = Modifier.height(16.dp))
@@ -191,14 +231,18 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Switch(checked = volumePtt, onCheckedChange = { isChecked ->
-                if (isChecked) {
-                    showVolumePttDialog = true
-                } else {
-                    volumePtt = false
-                    prefs.edit().putBoolean("volume_ptt", false).apply()
-                }
-            })
+            Switch(
+                checked = volumePtt,
+                onCheckedChange = { isChecked ->
+                    if (isChecked) {
+                        showVolumePttDialog = true
+                    } else {
+                        volumePtt = false
+                        prefs.edit().putBoolean("volume_ptt", false).apply()
+                    }
+                },
+                enabled = isHost
+            )
             
             if (showVolumePttDialog) {
                 AlertDialog(

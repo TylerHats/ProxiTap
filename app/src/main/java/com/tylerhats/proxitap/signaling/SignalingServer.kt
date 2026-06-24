@@ -23,6 +23,8 @@ class SignalingServer {
     // peerId to deviceName
     private val participantNames = ConcurrentHashMap<String, String>()
 
+    var hostName = "Host"
+
     // For the Host to listen to incoming messages from Peers
     private val _incomingMessages = MutableSharedFlow<Pair<String, JSONObject>>(extraBufferCapacity = 64)
     val incomingMessages = _incomingMessages.asSharedFlow()
@@ -32,10 +34,20 @@ class SignalingServer {
 
     private suspend fun broadcastParticipants() {
         val participantsList = org.json.JSONArray()
+        
+        // Add Host at index 0
+        val hostObj = JSONObject().apply {
+            put("id", "HOST")
+            put("name", hostName)
+            put("isHost", true)
+        }
+        participantsList.put(hostObj)
+
         participantNames.forEach { (id, name) ->
             val p = JSONObject()
             p.put("id", id)
             p.put("name", name)
+            p.put("isHost", false)
             participantsList.put(p)
         }
         val msg = JSONObject()
@@ -75,6 +87,12 @@ class SignalingServer {
                                         val deviceName = if (json.has("deviceName")) json.getString("deviceName") else "Unknown Device"
                                         sessions[currentPeerId!!] = this
                                         participantNames[currentPeerId!!] = deviceName
+                                        broadcastParticipants()
+                                    }
+
+                                    if (type == "UPDATE_NAME" && currentPeerId != null) {
+                                        val newName = json.getString("name")
+                                        participantNames[currentPeerId!!] = newName
                                         broadcastParticipants()
                                     }
                                     
@@ -122,6 +140,18 @@ class SignalingServer {
 
     suspend fun sendMessageToPeer(targetPeerId: String, json: JSONObject) {
         sessions[targetPeerId]?.send(Frame.Text(json.toString()))
+    }
+
+    suspend fun broadcastMessage(json: JSONObject) {
+        val msgString = json.toString()
+        sessions.values.forEach { 
+            try { it.send(Frame.Text(msgString)) } catch (e: Exception) {}
+        }
+    }
+
+    suspend fun updateHostName(newHostName: String) {
+        hostName = newHostName
+        broadcastParticipants()
     }
     
     suspend fun broadcastAudioData(data: ByteArray) {

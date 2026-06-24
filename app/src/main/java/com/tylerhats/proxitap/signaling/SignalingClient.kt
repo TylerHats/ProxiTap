@@ -107,6 +107,10 @@ class SignalingClient(private val hostIp: String, private val port: Int = 8080) 
         }
     }
     
+    suspend fun sendMessageSuspend(json: JSONObject) {
+        session?.send(Frame.Text(json.toString()))
+    }
+    
     fun sendAudioData(data: ByteArray) {
         connectionScope?.launch {
             session?.send(Frame.Binary(true, data))
