@@ -33,6 +33,9 @@ class SignalingClient(private val hostIp: String, private val port: Int = 8080) 
 
     private val _incomingMessages = MutableSharedFlow<JSONObject>(extraBufferCapacity = 64)
     val incomingMessages = _incomingMessages.asSharedFlow()
+    
+    private val _incomingAudio = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
+    val incomingAudio = _incomingAudio.asSharedFlow()
 
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
@@ -67,6 +70,9 @@ class SignalingClient(private val hostIp: String, private val port: Int = 8080) 
                             if (frame is Frame.Text) {
                                 val message = frame.readText()
                                 _incomingMessages.emit(JSONObject(message))
+                            } else if (frame is Frame.Binary) {
+                                val bytes = frame.readBytes()
+                                _incomingAudio.emit(bytes)
                             }
                         }
                     }
@@ -87,9 +93,13 @@ class SignalingClient(private val hostIp: String, private val port: Int = 8080) 
 
     fun sendMessage(json: JSONObject) {
         connectionScope?.launch {
-            if (_connectionState.value == ConnectionState.CONNECTED) {
-                session?.send(Frame.Text(json.toString()))
-            }
+            session?.send(Frame.Text(json.toString()))
+        }
+    }
+    
+    fun sendAudioData(data: ByteArray) {
+        connectionScope?.launch {
+            session?.send(Frame.Binary(true, data))
         }
     }
 

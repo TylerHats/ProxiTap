@@ -2,9 +2,15 @@ package com.tylerhats.proxitap
 
 import android.content.Intent
 import android.os.Bundle
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.core.content.ContextCompat
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
@@ -15,6 +21,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navDeepLink
 import com.tylerhats.proxitap.ui.screens.*
 import com.tylerhats.proxitap.ui.theme.ProxiTapTheme
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -40,6 +47,56 @@ fun ProxiTapApp() {
     
     val nanImpl = remember { com.tylerhats.proxitap.network.NanImpl(context) }
     val hotspotImpl = remember { com.tylerhats.proxitap.network.HotspotImpl(context) }
+
+    // Request required permissions on startup
+    val permissionsToRequest = mutableListOf(
+        Manifest.permission.ACCESS_FINE_LOCATION,
+        Manifest.permission.RECORD_AUDIO
+    )
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        permissionsToRequest.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+    }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        permissionsToRequest.add(Manifest.permission.BLUETOOTH_CONNECT)
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        // Handle permission results if needed
+    }
+
+    LaunchedEffect(Unit) {
+        val ungrantedPermissions = permissionsToRequest.filter {
+            ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (ungrantedPermissions.isNotEmpty()) {
+            permissionLauncher.launch(ungrantedPermissions.toTypedArray())
+        }
+    }
+    
+    val mediaProjectionManager = context.getSystemService(android.content.Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
+    var pendingLobbyAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    
+    val screenCaptureLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK && result.data != null) {
+            val intent = android.content.Intent(context, com.tylerhats.proxitap.audio.CallService::class.java)
+            intent.putExtra("media_projection_data", result.data)
+            intent.putExtra("media_projection_result", result.resultCode)
+            // The actual flags (isMediaLobby/isBidirectional) will be set when the lobby starts in LaunchedEffect
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+            pendingLobbyAction?.invoke()
+        } else {
+            android.widget.Toast.makeText(context, "Permission required for Media Lobby", android.widget.Toast.LENGTH_LONG).show()
+        }
+        pendingLobbyAction = null
+    }
     
     // Helper to get active manager based on mode
     fun getNetworkManager(mode: String?): com.tylerhats.proxitap.network.LocalNetworkManager {
@@ -73,9 +130,17 @@ fun ProxiTapApp() {
     NavHost(navController = navController, startDestination = "home") {
         composable("home") {
             HomeScreen(
-                onHostClick = { name, pin, useHotspot, enableRadar -> 
+                onHostClick = { name, pin, useHotspot, enableRadar, isMediaLobby, isBidirectional -> 
                     isHost = true
-                    navController.navigate("lobby?name=$name&pin=${pin ?: ""}&hotspot=$useHotspot&radar=$enableRadar") 
+                    val startAction = {
+                        navController.navigate("lobby?name=$name&pin=${pin ?: ""}&hotspot=$useHotspot&radar=$enableRadar&media=$isMediaLobby&bidi=$isBidirectional")
+                    }
+                    if (isMediaLobby) {
+                        pendingLobbyAction = startAction
+                        screenCaptureLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
+                    } else {
+                        startAction()
+                    }
                 },
                 onJoinClick = { 
                     isHost = false
@@ -105,18 +170,22 @@ fun ProxiTapApp() {
             )
         }
         composable(
-            route = "lobby?name={name}&pin={pin}&hotspot={hotspot}&radar={radar}",
+            route = "lobby?name={name}&pin={pin}&hotspot={hotspot}&radar={radar}&media={media}&bidi={bidi}",
             arguments = listOf(
                 androidx.navigation.navArgument("name") { defaultValue = "ProxiTap_Lobby" },
                 androidx.navigation.navArgument("pin") { defaultValue = "" },
                 androidx.navigation.navArgument("hotspot") { defaultValue = "false" },
-                androidx.navigation.navArgument("radar") { defaultValue = "false" }
+                androidx.navigation.navArgument("radar") { defaultValue = "false" },
+                androidx.navigation.navArgument("media") { defaultValue = "false" },
+                androidx.navigation.navArgument("bidi") { defaultValue = "false" }
             )
         ) { backStackEntry ->
             val name = backStackEntry.arguments?.getString("name") ?: "ProxiTap_Lobby"
             val pin = backStackEntry.arguments?.getString("pin") ?: ""
             val useHotspot = backStackEntry.arguments?.getString("hotspot") == "true"
             val enableRadar = backStackEntry.arguments?.getString("radar") == "true"
+            val isMediaLobby = backStackEntry.arguments?.getString("media") == "true"
+            val isBidirectional = backStackEntry.arguments?.getString("bidi") == "true"
             val activeManager = if (useHotspot) hotspotImpl else nanImpl
             val modeStr = if (useHotspot) "hotspot" else "nan"
             
@@ -135,6 +204,8 @@ fun ProxiTapApp() {
             LaunchedEffect(hostNetworkReady, callService) {
                 if (hostNetworkReady && callService != null) {
                     val intent = android.content.Intent(context, com.tylerhats.proxitap.audio.CallService::class.java)
+                    intent.putExtra("isMediaLobby", isMediaLobby)
+                    intent.putExtra("isBidirectional", isBidirectional)
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                         context.startForegroundService(intent)
                     } else {
@@ -147,9 +218,9 @@ fun ProxiTapApp() {
             if (servicePayload != null) {
                 val cleanPayload = servicePayload!!.removePrefix("PROXI:NAN:S:").removePrefix("PROXI:HOTSPOT:S:")
                 LobbyScreen(
-                    qrPayload = "https://pt.htsth.app/join?mode=$modeStr&radar=$enableRadar&service=$cleanPayload",
+                    qrPayload = "https://pt.htsth.app/join?mode=$modeStr&radar=$enableRadar&service=$cleanPayload&media=$isMediaLobby&bidi=$isBidirectional",
                     onStartCallClick = { 
-                        navController.navigate("call?mode=$modeStr&radar=$enableRadar") 
+                        navController.navigate("call?mode=$modeStr&radar=$enableRadar&media=$isMediaLobby&bidi=$isBidirectional") 
                     }
                 )
             } else {
@@ -170,12 +241,14 @@ fun ProxiTapApp() {
             )
         }
         composable(
-            route = "call?mode={mode}&radar={radar}&service={service}&pin={pin}",
-            deepLinks = listOf(navDeepLink { uriPattern = "https://pt.htsth.app/join?mode={mode}&radar={radar}&service={service}&pin={pin}" })
+            route = "call?mode={mode}&radar={radar}&service={service}&pin={pin}&media={media}&bidi={bidi}",
+            deepLinks = listOf(navDeepLink { uriPattern = "https://pt.htsth.app/join?mode={mode}&radar={radar}&service={service}&pin={pin}&media={media}&bidi={bidi}" })
         ) { backStackEntry ->
             val service = backStackEntry.arguments?.getString("service")
             val mode = backStackEntry.arguments?.getString("mode") ?: "nan"
             val enableRadar = backStackEntry.arguments?.getString("radar") == "true"
+            val isMediaLobby = backStackEntry.arguments?.getString("media") == "true"
+            val isBidirectional = backStackEntry.arguments?.getString("bidi") == "true"
             val activeManager = getNetworkManager(mode)
             
             val isDeepLinkJoin = service != null
@@ -185,21 +258,34 @@ fun ProxiTapApp() {
 
             LaunchedEffect(service) {
                 if (isDeepLinkJoin && service != null) {
-                    try {
-                        val prefix = if (mode == "hotspot") "WIFI:T:WPA;S:" else "PROXI:NAN:S:"
-                        val payload = "$prefix$service"
-                        activeManager.joinLobby(payload)
-                        
-                        val intent = android.content.Intent(context, com.tylerhats.proxitap.audio.CallService::class.java)
-                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                            context.startForegroundService(intent)
-                        } else {
-                            context.startService(intent)
+                    val joinAction = suspend {
+                        try {
+                            val prefix = if (mode == "hotspot") "WIFI:T:WPA;S:" else "PROXI:NAN:S:"
+                            val payload = "$prefix$service"
+                            activeManager.joinLobby(payload)
+                            
+                            val intent = android.content.Intent(context, com.tylerhats.proxitap.audio.CallService::class.java)
+                            intent.putExtra("isMediaLobby", isMediaLobby)
+                            intent.putExtra("isBidirectional", isBidirectional)
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                                context.startForegroundService(intent)
+                            } else {
+                                context.startService(intent)
+                            }
+                            
+                            isReconnecting = false
+                        } catch (e: Exception) {
+                            android.util.Log.e("MainActivity", "Failed to join lobby", e)
                         }
-                        
-                        isReconnecting = false
-                    } catch (e: Exception) {
-                        android.util.Log.e("MainActivity", "Failed to join lobby", e)
+                    }
+                    
+                    if (isBidirectional && !isHost) {
+                        pendingLobbyAction = {
+                            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch { joinAction() }
+                        }
+                        screenCaptureLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
+                    } else {
+                        joinAction()
                     }
                 }
             }

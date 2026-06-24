@@ -16,6 +16,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
@@ -74,6 +76,7 @@ fun ScannerScreen(
                     .fillMaxWidth()
                     .aspectRatio(1f)
                     .padding(16.dp)
+                    .clip(RoundedCornerShape(16.dp))
             ) {
                 AndroidView(
                     factory = { ctx ->

@@ -9,7 +9,7 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 fun HomeScreen(
-    onHostClick: (String, String?, Boolean, Boolean) -> Unit,
+    onHostClick: (String, String?, Boolean, Boolean, Boolean, Boolean) -> Unit,
     onJoinClick: () -> Unit,
     onSearchAreaClick: () -> Unit
 ) {
@@ -17,6 +17,8 @@ fun HomeScreen(
     var pin by remember { mutableStateOf("") }
     var useHotspot by remember { mutableStateOf(false) }
     var enableRadar by remember { mutableStateOf(false) }
+    var isMediaLobby by remember { mutableStateOf(false) }
+    var isBidirectional by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -98,12 +100,44 @@ fun HomeScreen(
             }
         }
         
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column {
+                Text("Media Lobby (System Audio)", style = MaterialTheme.typography.bodyLarge)
+                Text("Broadcasts device audio instead of mic.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Switch(
+                checked = isMediaLobby,
+                onCheckedChange = { 
+                    isMediaLobby = it 
+                    if (!it) isBidirectional = false
+                }
+            )
+        }
+
+        if (isMediaLobby) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("Bidirectional Media", style = MaterialTheme.typography.bodyMedium)
+                Switch(
+                    checked = isBidirectional,
+                    onCheckedChange = { isBidirectional = it }
+                )
+            }
+        }
+        
         Spacer(modifier = Modifier.height(32.dp))
         
         Button(
             onClick = { 
                 val finalName = lobbyName.takeIf { it.isNotBlank() } ?: "ProxiTap_Lobby_${(100..999).random()}"
-                onHostClick(finalName, pin.takeIf { it.isNotBlank() }, useHotspot, enableRadar) 
+                onHostClick(finalName, pin.takeIf { it.isNotBlank() }, useHotspot, enableRadar, isMediaLobby, isBidirectional) 
             },
             modifier = Modifier.fillMaxWidth().height(56.dp)
         ) {

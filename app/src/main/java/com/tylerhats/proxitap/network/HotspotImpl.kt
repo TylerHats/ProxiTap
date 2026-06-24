@@ -27,30 +27,38 @@ class HotspotImpl(private val context: Context) : LocalNetworkManager {
     @SuppressLint("MissingPermission") // Permissions are requested in the UI layer
     override suspend fun startHosting(lobbyName: String, hasPin: Boolean): String = suspendCancellableCoroutine { continuation ->
         Log.d("HotspotImpl", "Starting LocalOnlyHotspot...")
-        wifiManager.startLocalOnlyHotspot(object : WifiManager.LocalOnlyHotspotCallback() {
-            override fun onStarted(reservation: WifiManager.LocalOnlyHotspotReservation?) {
-                super.onStarted(reservation)
-                hotspotReservation = reservation
-                
-                val config = reservation?.softApConfiguration
-                val ssid = config?.ssid
-                val password = config?.passphrase
-                
-                if (ssid != null && password != null) {
-                    val qrPayload = "WIFI:T:WPA;S:$ssid;P:$password;;"
-                    Log.d("HotspotImpl", "Hotspot started successfully. SSID: $ssid")
-                    continuation.resume(qrPayload)
-                } else {
-                    continuation.resumeWithException(Exception("Failed to retrieve Hotspot credentials"))
+        try {
+            wifiManager.startLocalOnlyHotspot(object : WifiManager.LocalOnlyHotspotCallback() {
+                override fun onStarted(reservation: WifiManager.LocalOnlyHotspotReservation?) {
+                    super.onStarted(reservation)
+                    hotspotReservation = reservation
+                    
+                    val config = reservation?.softApConfiguration
+                    val ssid = config?.ssid
+                    val password = config?.passphrase
+                    
+                    if (ssid != null && password != null) {
+                        val qrPayload = "WIFI:T:WPA;S:$ssid;P:$password;;"
+                        Log.d("HotspotImpl", "Hotspot started successfully. SSID: $ssid")
+                        continuation.resume(qrPayload)
+                    } else {
+                        continuation.resumeWithException(Exception("Failed to retrieve Hotspot credentials"))
+                    }
                 }
-            }
 
-            override fun onFailed(reason: Int) {
-                super.onFailed(reason)
-                Log.e("HotspotImpl", "Failed to start hotspot. Reason: $reason")
-                continuation.resumeWithException(Exception("Hotspot failed with reason: $reason"))
-            }
-        }, Handler(Looper.getMainLooper()))
+                override fun onFailed(reason: Int) {
+                    super.onFailed(reason)
+                    Log.e("HotspotImpl", "Failed to start hotspot. Reason: $reason")
+                    continuation.resumeWithException(Exception("Hotspot failed with reason: $reason"))
+                }
+            }, Handler(Looper.getMainLooper()))
+        } catch (e: SecurityException) {
+            Log.e("HotspotImpl", "SecurityException starting hotspot. Missing permissions?", e)
+            continuation.resumeWithException(e)
+        } catch (e: Exception) {
+            Log.e("HotspotImpl", "Exception starting hotspot", e)
+            continuation.resumeWithException(e)
+        }
     }
 
     override fun discoverLobbies(onLobbyFound: (String, Boolean, String) -> Unit) {

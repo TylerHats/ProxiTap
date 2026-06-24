@@ -58,6 +58,12 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
     private var wakeLock: PowerManager.WakeLock? = null
     private var pttReceiver: BroadcastReceiver? = null
 
+    var isMediaLobby = false
+        private set
+    var isBidirectional = false
+        private set
+    private var mediaStreamer: MediaStreamer? = null
+
     inner class LocalBinder : Binder() {
         fun getService(): CallService = this@CallService
     }
@@ -87,7 +93,6 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             isAcousticEchoCancellationEnabled = aecEnabled
             opusDtxEnabled = opusDtx
             opusBitrateBps = opusBitrate
-            initWebRtcAndTracks()
         }
         
         webRtcClient.startAudioLevelMonitoring { speaking ->
@@ -145,6 +150,41 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             sendBroadcast(Intent("com.tylerhats.proxitap.CALL_ENDED"))
             stopSelf()
             return START_NOT_STICKY
+        }
+
+        intent?.let {
+            if (it.hasExtra("isMediaLobby")) {
+                isMediaLobby = it.getBooleanExtra("isMediaLobby", false)
+                isBidirectional = it.getBooleanExtra("isBidirectional", false)
+                val mediaResult = it.getIntExtra("media_projection_result", 0)
+                val mediaData = it.getParcelableExtra<Intent>("media_projection_data")
+                
+                if (isMediaLobby && mediaStreamer == null) {
+                    mediaStreamer = MediaStreamer(this)
+                    mediaStreamer?.startPlayback()
+                    
+                    if (mediaResult != 0 && mediaData != null) {
+                        val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
+                        val projection = mediaProjectionManager.getMediaProjection(mediaResult, mediaData)
+                        if (projection != null) {
+                            mediaStreamer?.startCapture(projection) { audioData ->
+                                if (signalingServer != null) {
+                                    scope.launch { signalingServer?.broadcastAudioData(audioData) }
+                                } else if (signalingClient != null) {
+                                    signalingClient?.sendAudioData(audioData)
+                                }
+                            }
+                        }
+                    }
+                } else if (!isMediaLobby && !webRtcClient.hasPeerConnection("DUMMY")) {
+                    // Only init WebRTC tracks if it's not a media lobby and hasn't been initialized
+                    try {
+                        webRtcClient.initWebRtcAndTracks()
+                    } catch (e: Exception) {
+                        Log.e("CallService", "Error initializing WebRTC", e)
+                    }
+                }
+            }
         }
 
         startForeground(1, createNotification())
@@ -252,6 +292,16 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                 }
             }
         }
+        
+        scope.launch {
+            signalingServer?.incomingAudio?.collect { (_, audioData) ->
+                if (isMediaLobby && isBidirectional) {
+                    mediaStreamer?.playAudioData(audioData)
+                    // Optional: broadcast this peer's audio to other peers
+                    signalingServer?.broadcastAudioData(audioData)
+                }
+            }
+        }
     }
 
     fun startPeerSignaling(hostIp: String, port: Int = 8080) {
@@ -307,6 +357,14 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                 }
             }
         }
+
+        scope.launch {
+            signalingClient?.incomingAudio?.collect { audioData ->
+                if (isMediaLobby) {
+                    mediaStreamer?.playAudioData(audioData)
+                }
+            }
+        }
     }
 
     override fun onDestroy() {
@@ -328,6 +386,7 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
 
         scope.cancel()
         webRtcClient.dispose()
+        mediaStreamer?.stop()
         signalingServer?.stopServer()
         signalingClient?.disconnect()
         hardwarePttManager?.stop()

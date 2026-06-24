@@ -23,6 +23,9 @@ class SignalingServer {
     // For the Host to listen to incoming messages from Peers
     private val _incomingMessages = MutableSharedFlow<Pair<String, JSONObject>>(extraBufferCapacity = 64)
     val incomingMessages = _incomingMessages.asSharedFlow()
+    
+    private val _incomingAudio = MutableSharedFlow<Pair<String, ByteArray>>(extraBufferCapacity = 64)
+    val incomingAudio = _incomingAudio.asSharedFlow()
 
     fun startServer(port: Int = 8080) {
         Log.d("SignalingServer", "Starting Ktor WebSocket server on port $port")
@@ -62,6 +65,18 @@ class SignalingServer {
                                             sessions[targetId]?.send(Frame.Text(message))
                                         }
                                     }
+                                } else if (frame is Frame.Binary) {
+                                    if (currentPeerId != null) {
+                                        val bytes = frame.readBytes()
+                                        _incomingAudio.tryEmit(Pair(currentPeerId!!, bytes))
+                                        
+                                        // Broadcast binary audio to all OTHER peers
+                                        sessions.forEach { (id, s) ->
+                                            if (id != currentPeerId) {
+                                                s.send(Frame.Binary(true, bytes))
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         } catch (e: Exception) {
@@ -80,6 +95,10 @@ class SignalingServer {
 
     suspend fun sendMessageToPeer(targetPeerId: String, json: JSONObject) {
         sessions[targetPeerId]?.send(Frame.Text(json.toString()))
+    }
+    
+    suspend fun broadcastAudioData(data: ByteArray) {
+        sessions.values.forEach { it.send(Frame.Binary(true, data)) }
     }
 
     fun stopServer() {
