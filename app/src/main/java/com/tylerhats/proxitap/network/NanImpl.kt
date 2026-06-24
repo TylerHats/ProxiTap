@@ -189,6 +189,14 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
                     continuation.resume(true)
                 }
             }
+
+            override fun onLost(network: Network) {
+                super.onLost(network)
+                Log.w("NanImpl", "Peer Data Path LOST. Entering Reconnect State...")
+                // We do NOT close the SubscribeSession here. 
+                // We wait and rely on DiscoverySessionCallback to potentially re-discover if we come back in range.
+                // The UI layer (via ViewModel) will show the Reconnecting spinner.
+            }
         }
         connectivityManager.requestNetwork(networkRequest, callback)
         peerNetworkCallback = callback

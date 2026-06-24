@@ -14,6 +14,8 @@ import androidx.compose.ui.unit.dp
 fun CallScreen(
     isHost: Boolean,
     isMuted: Boolean,
+    distanceMeters: Float? = null,
+    isReconnecting: Boolean = false,
     onMuteToggle: () -> Unit,
     onEndCallClick: () -> Unit,
     onSettingsClick: () -> Unit
@@ -43,22 +45,35 @@ fun CallScreen(
             modifier = Modifier
                 .size(160.dp)
                 .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primaryContainer),
+                .background(if (isReconnecting) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.primaryContainer),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = "PT", 
-                style = MaterialTheme.typography.displayLarge,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
-            )
+            if (isReconnecting) {
+                CircularProgressIndicator(color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                Text(
+                    text = "PT", 
+                    style = MaterialTheme.typography.displayLarge,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
         }
         
         Spacer(modifier = Modifier.height(32.dp))
         Text(
-            text = "Voice Active", 
+            text = if (isReconnecting) "Reconnecting..." else "Voice Active", 
             style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.secondary
+            color = if (isReconnecting) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.secondary
         )
+
+        if (distanceMeters != null && !isReconnecting) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "Distance: %.1fm".format(distanceMeters),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
         
         Spacer(modifier = Modifier.weight(1f))
         

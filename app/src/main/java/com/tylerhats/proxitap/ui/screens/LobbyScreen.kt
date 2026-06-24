@@ -41,11 +41,32 @@ fun LobbyScreen(
         
         Spacer(modifier = Modifier.weight(1f))
         
-        Button(
-            onClick = onStartCallClick,
-            modifier = Modifier.fillMaxWidth().height(56.dp)
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Text("Start Call")
+            val context = androidx.compose.ui.platform.LocalContext.current
+            OutlinedButton(
+                onClick = {
+                    val sendIntent = android.content.Intent().apply {
+                        action = android.content.Intent.ACTION_SEND
+                        putExtra(android.content.Intent.EXTRA_TEXT, qrPayload)
+                        type = "text/plain"
+                    }
+                    val shareIntent = android.content.Intent.createChooser(sendIntent, null)
+                    context.startActivity(shareIntent)
+                },
+                modifier = Modifier.weight(1f).height(56.dp)
+            ) {
+                Text("Share URL")
+            }
+
+            Button(
+                onClick = onStartCallClick,
+                modifier = Modifier.weight(1f).height(56.dp)
+            ) {
+                Text("Start Call")
+            }
         }
     }
 }

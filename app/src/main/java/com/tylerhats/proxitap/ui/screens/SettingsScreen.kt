@@ -73,6 +73,43 @@ fun SettingsScreen(
                 label = { Text("Local Hotspot") }
             )
         }
+
+        Spacer(modifier = Modifier.height(32.dp))
+        Text("Experimental Features", style = MaterialTheme.typography.titleMedium)
+        
+        var hardwarePtt by remember { mutableStateOf(false) }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text("Hardware Push-To-Talk")
+                Text(
+                    text = "Use earbud play/pause button to toggle mute",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(checked = hardwarePtt, onCheckedChange = { hardwarePtt = it })
+        }
+        
+        var rnnoise by remember { mutableStateOf(false) }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text("RNNoise AI Cancellation")
+                Text(
+                    text = "Bypass hardware constraints for deep-learning noise removal",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(checked = rnnoise, onCheckedChange = { rnnoise = it })
+        }
         
         Spacer(modifier = Modifier.weight(1f))
         
