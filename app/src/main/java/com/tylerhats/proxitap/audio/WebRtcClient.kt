@@ -22,6 +22,8 @@ class WebRtcClient(private val context: Context) {
 
     var isNoiseSuppressionEnabled: Boolean = true
     var isAcousticEchoCancellationEnabled: Boolean = true
+    var opusDtxEnabled: Boolean = true
+    var opusBitrateBps: Int = 64000
 
     fun initWebRtcAndTracks() {
         initWebRtc()
@@ -122,7 +124,8 @@ class WebRtcClient(private val context: Context) {
     }
 
     private fun mungeSdpForOpus(sdp: String): String {
-        return sdp.replace(Regex("a=fmtp:111(.*)"), "a=fmtp:111$1;usedtx=1;maxaveragebitrate=64000;stereo=0")
+        val dtxValue = if (opusDtxEnabled) 1 else 0
+        return sdp.replace(Regex("a=fmtp:111(.*)"), "a=fmtp:111$1;usedtx=$dtxValue;maxaveragebitrate=$opusBitrateBps;stereo=0")
     }
 
     fun triggerIceRestart(peerId: String, signalingCallback: SignalingCallback) {

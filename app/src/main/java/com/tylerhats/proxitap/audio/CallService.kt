@@ -180,6 +180,12 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                     audioManager.isBluetoothScoOn = false
                 }
             }
+            "opus_dtx" -> {
+                webRtcClient.opusDtxEnabled = sharedPreferences.getBoolean(key, true)
+            }
+            "opus_bitrate" -> {
+                webRtcClient.opusBitrateBps = sharedPreferences.getInt(key, 64000)
+            }
         }
     }
 
