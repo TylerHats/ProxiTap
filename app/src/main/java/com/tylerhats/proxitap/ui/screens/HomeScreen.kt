@@ -1,8 +1,10 @@
 package com.tylerhats.proxitap.ui.screens
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.res.painterResource
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -31,6 +33,13 @@ fun HomeScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Top
     ) {
+        Image(
+            painter = painterResource(id = com.tylerhats.proxitap.R.mipmap.ic_launcher),
+            contentDescription = "ProxiTap Logo",
+            modifier = Modifier
+                .size(96.dp)
+                .padding(bottom = 16.dp)
+        )
         Text(
             text = "ProxiTap",
             style = MaterialTheme.typography.displayLarge,
