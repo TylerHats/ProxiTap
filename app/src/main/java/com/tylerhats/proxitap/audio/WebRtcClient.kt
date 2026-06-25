@@ -359,10 +359,10 @@ class WebRtcClient(private val context: Context) {
     private val lastPacketsLost = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val lastPacketsReceived = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
-    fun getPeerConnectionQuality(peerId: String, callback: (rttMs: Double?, packetLossRate: Float?) -> Unit) {
+    fun getPeerConnectionQuality(peerId: String, callback: (rttMs: Double?, packetLossRate: Float?, hasTraffic: Boolean) -> Unit) {
         val pc = peerConnections[peerId]
         if (pc == null) {
-            callback(null, null)
+            callback(null, null, false)
             return
         }
         pc.getStats { report ->
@@ -385,6 +385,7 @@ class WebRtcClient(private val context: Context) {
                 }
             }
             
+            var hasTraffic = false
             val lossRate = if (packetsLost != null && packetsReceived != null) {
                 val lastLost = lastPacketsLost[peerId] ?: 0L
                 val lastReceived = lastPacketsReceived[peerId] ?: 0L
@@ -397,6 +398,7 @@ class WebRtcClient(private val context: Context) {
                 
                 val deltaTotal = deltaLost + deltaReceived
                 if (deltaTotal > 0) {
+                    hasTraffic = true
                     (deltaLost.toFloat() / deltaTotal.toFloat()) * 100f
                 } else {
                     0f
@@ -404,7 +406,7 @@ class WebRtcClient(private val context: Context) {
             } else {
                 null
             }
-            callback(rtt, lossRate)
+            callback(rtt, lossRate, hasTraffic)
         }
     }
 }

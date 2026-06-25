@@ -84,6 +84,9 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
     val peerQualities: StateFlow<Map<String, PeerQuality>> = _peerQualities
     
     private val peerPings = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val smoothedPings = java.util.concurrent.ConcurrentHashMap<String, Double>()
+    private val smoothedLosses = java.util.concurrent.ConcurrentHashMap<String, Float>()
+    private var successiveExcellentReadings = 0
 
     private val _isMuted = MutableStateFlow(false)
     val isMuted: StateFlow<Boolean> = _isMuted
@@ -496,7 +499,7 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                                 )
                             } else if (!isMediaLobby) {
                                 // WebRTC Call
-                                webRtcClient.getPeerConnectionQuality(p.id) { rtt, loss ->
+                                webRtcClient.getPeerConnectionQuality(p.id) { rtt, loss, hasTraffic ->
                                     val rttVal = rtt?.toLong() ?: ping
                                     val servicePrefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
                                     val currentBitrate = if (isHostSignaling && servicePrefs.getBoolean("dynamic_bitrate_enabled", true)) {
@@ -519,9 +522,27 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                                     }
                                     
                                     if (isHostSignaling && !isGroupVoice && !isMediaLobby) {
-                                        if (servicePrefs.getBoolean("dynamic_bitrate_enabled", true)) {
+                                        if (servicePrefs.getBoolean("dynamic_bitrate_enabled", true) && hasTraffic) {
+                                            // Apply Exponential Moving Average (EMA) to smooth out fluctuations
+                                            val alpha = 0.35f
+                                            val prevPing = smoothedPings[p.id]
+                                            val nextPing = if (rttVal != null) {
+                                                if (prevPing != null) (alpha.toDouble() * rttVal + (1.0 - alpha.toDouble()) * prevPing) else rttVal.toDouble()
+                                            } else {
+                                                prevPing
+                                            }
+                                            if (nextPing != null) smoothedPings[p.id] = nextPing
+
+                                            val prevLoss = smoothedLosses[p.id]
+                                            val nextLoss = if (loss != null) {
+                                                if (prevLoss != null) (alpha * loss + (1f - alpha) * prevLoss) else loss
+                                            } else {
+                                                prevLoss
+                                            }
+                                            if (nextLoss != null) smoothedLosses[p.id] = nextLoss
+
                                             val maxBitrate = servicePrefs.getInt("opus_bitrate", 64000)
-                                            adjustDynamicBitrate(rttVal, loss, maxBitrate)
+                                            adjustDynamicBitrate(nextPing?.toLong(), nextLoss, maxBitrate)
                                         }
                                     }
                                 }
@@ -750,29 +771,32 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             currentIndex = steps.indexOf(64000)
         }
         
-        val newIndex = when {
-            ping == null || loss == null -> {
-                currentIndex
-            }
-            ping > 200 || loss > 8f -> {
+        var newIndex = currentIndex
+        
+        if (ping != null && loss != null) {
+            if (ping > 200 || loss > 8f) {
                 // True extreme case - force minimum bitrate to maintain connection
-                0 // 2 kbps
-            }
-            ping > 120 || loss > 4f -> {
+                newIndex = 0
+                successiveExcellentReadings = 0
+            } else if (ping > 120 || loss > 4f) {
                 // Poor connection - decrease by 2 steps
-                (currentIndex - 2).coerceAtLeast(0)
-            }
-            ping > 70 || loss > 1.5f -> {
+                newIndex = (currentIndex - 2).coerceAtLeast(0)
+                successiveExcellentReadings = 0
+            } else if (ping > 70 || loss > 1.5f) {
                 // Fair connection - decrease by 1 step
-                (currentIndex - 1).coerceAtLeast(0)
-            }
-            ping <= 40 && loss <= 0.5f -> {
-                // Excellent connection - increase by 1 step (up to targetMaxBitrate)
-                val targetIndex = steps.indexOf(targetMaxBitrate).coerceAtLeast(0)
-                (currentIndex + 1).coerceAtMost(targetIndex)
-            }
-            else -> {
-                currentIndex
+                newIndex = (currentIndex - 1).coerceAtLeast(0)
+                successiveExcellentReadings = 0
+            } else if (ping <= 40 && loss <= 0.5f) {
+                // Excellent connection - increment successive counter
+                successiveExcellentReadings++
+                if (successiveExcellentReadings >= 3) {
+                    val targetIndex = steps.indexOf(targetMaxBitrate).coerceAtLeast(0)
+                    newIndex = (currentIndex + 1).coerceAtMost(targetIndex)
+                    successiveExcellentReadings = 0 // Reset to trigger slow start step on next interval
+                }
+            } else {
+                // Good but not excellent - hold the line and reset counter
+                successiveExcellentReadings = 0
             }
         }
         
@@ -1194,6 +1218,9 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         _isReconnecting.value = false
         while (outgoingAudioChannel.tryReceive().isSuccess) { /* drain */ }
         callStartTime = 0L
+        smoothedPings.clear()
+        smoothedLosses.clear()
+        successiveExcellentReadings = 0
         myPeerId = UUID.randomUUID().toString()
         
         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
