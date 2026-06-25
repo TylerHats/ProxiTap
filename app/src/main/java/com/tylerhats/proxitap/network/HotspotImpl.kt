@@ -25,7 +25,7 @@ class HotspotImpl(private val context: Context) : LocalNetworkManager {
     private var hostIpAddress: String? = null
 
     @SuppressLint("MissingPermission") // Permissions are requested in the UI layer
-    override suspend fun startHosting(lobbyName: String, pin: String, isMediaLobby: Boolean, isBidirectional: Boolean, enableRadar: Boolean, isGroupVoice: Boolean): String = suspendCancellableCoroutine { continuation ->
+    override suspend fun startHosting(lobbyName: String, pin: String, isMediaLobby: Boolean, isBidirectional: Boolean, isGroupVoice: Boolean): String = suspendCancellableCoroutine { continuation ->
         Log.d("HotspotImpl", "Starting LocalOnlyHotspot...")
         try {
             wifiManager.startLocalOnlyHotspot(object : WifiManager.LocalOnlyHotspotCallback() {

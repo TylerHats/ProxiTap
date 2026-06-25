@@ -19,6 +19,7 @@ fun SettingsScreen(
     isHost: Boolean = true,
     isMediaLobby: Boolean = false,
     isGroupVoice: Boolean = false,
+    isBidirectional: Boolean = false,
     onBackClick: () -> Unit
 ) {
     val context = LocalContext.current
@@ -319,7 +320,8 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(16.dp))
         }
 
-        if (isMediaLobby) {
+        val isDirectUdpMedia = isMediaLobby && isBidirectional && !isGroupVoice
+        if (isMediaLobby && !isDirectUdpMedia) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -357,7 +359,11 @@ fun SettingsScreen(
                     Text("2 people (Fixed)", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Text(
-                    text = "Direct Voice is limited to 2 participants for high-quality peer-to-peer audio.",
+                    text = if (isDirectUdpMedia) {
+                        "Bidirectional Media is limited to 2 participants for high-quality peer-to-peer audio."
+                    } else {
+                        "Direct Voice is limited to 2 participants for high-quality peer-to-peer audio."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

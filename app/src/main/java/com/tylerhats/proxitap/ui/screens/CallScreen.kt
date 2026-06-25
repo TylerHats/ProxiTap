@@ -20,7 +20,6 @@ fun CallScreen(
     isHost: Boolean,
     isMuted: Boolean,
     isSpeaking: Boolean = false,
-    distanceMeters: Float? = null,
     isConnecting: Boolean = false,
     isReconnecting: Boolean = false,
     isMediaLobby: Boolean = false,
@@ -129,15 +128,6 @@ fun CallScreen(
             color = if (isReconnecting || isConnecting) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.secondary
         )
 
-        if (distanceMeters != null && !isReconnecting && !isConnecting && participants.size <= 2) {
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "Distance: %.1fm".format(distanceMeters),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        
         if (participants.isNotEmpty()) {
             Spacer(modifier = Modifier.height(16.dp))
             Text("Participants", style = MaterialTheme.typography.titleMedium)

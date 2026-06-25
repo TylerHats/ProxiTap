@@ -132,11 +132,11 @@ fun ProxiTapApp() {
     NavHost(navController = navController, startDestination = "home") {
         composable("home") {
             HomeScreen(
-                onHostClick = { name, pin, useHotspot, enableRadar, isMediaLobby, isBidirectional, requiresProjection -> 
+                onHostClick = { name, pin, useHotspot, isMediaLobby, isBidirectional, requiresProjection -> 
                     isHost = true
                     val safePin = if (pin.isNullOrBlank()) "NONE" else pin
                     val startAction = {
-                        navController.navigate("lobby?name=$name&pin=$safePin&hotspot=$useHotspot&radar=$enableRadar&media=$isMediaLobby&bidi=$isBidirectional&reqProj=$requiresProjection")
+                        navController.navigate("lobby?name=$name&pin=$safePin&hotspot=$useHotspot&media=$isMediaLobby&bidi=$isBidirectional&reqProj=$requiresProjection")
                     }
                     if (requiresProjection) {
                         pendingLobbyAction = startAction
@@ -192,9 +192,8 @@ fun ProxiTapApp() {
                     val encoded = java.net.URLEncoder.encode(lobby.payload, "UTF-8")
                     val safePin = if (pinInput.isBlank()) "NONE" else pinInput
                     val parts = lobby.payload.split("|")
-                    val radarEnabled = if (parts.size >= 6) parts[5] == "1" else false
-                    val groupVoiceEnabled = if (parts.size >= 7) parts[6] == "1" else false
-                    navController.navigate("call?mode=nan&service=$encoded&media=${lobby.isMedia}&bidi=${lobby.isBidi}&pin=$safePin&radar=$radarEnabled&groupVoice=$groupVoiceEnabled")
+                    val groupVoiceEnabled = if (parts.size >= 6) parts[5] == "1" else false
+                    navController.navigate("call?mode=nan&service=$encoded&media=${lobby.isMedia}&bidi=${lobby.isBidi}&pin=$safePin&groupVoice=$groupVoiceEnabled")
                 },
                 onBackClick = {
                     nanImpl.stop()
@@ -203,12 +202,11 @@ fun ProxiTapApp() {
             )
         }
         composable(
-            route = "lobby?name={name}&pin={pin}&hotspot={hotspot}&radar={radar}&media={media}&bidi={bidi}&reqProj={reqProj}",
+            route = "lobby?name={name}&pin={pin}&hotspot={hotspot}&media={media}&bidi={bidi}&reqProj={reqProj}",
             arguments = listOf(
                 androidx.navigation.navArgument("name") { defaultValue = "ProxiTap_Lobby" },
                 androidx.navigation.navArgument("pin") { defaultValue = "" },
                 androidx.navigation.navArgument("hotspot") { defaultValue = "false" },
-                androidx.navigation.navArgument("radar") { defaultValue = "false" },
                 androidx.navigation.navArgument("media") { defaultValue = "false" },
                 androidx.navigation.navArgument("bidi") { defaultValue = "false" },
                 androidx.navigation.navArgument("reqProj") { defaultValue = "false" }
@@ -218,7 +216,6 @@ fun ProxiTapApp() {
             val pinArg = backStackEntry.arguments?.getString("pin") ?: ""
             val pin = if (pinArg == "NONE") "" else pinArg
             val useHotspot = backStackEntry.arguments?.getString("hotspot") == "true"
-            val enableRadar = backStackEntry.arguments?.getString("radar") == "true"
             val isMediaLobby = backStackEntry.arguments?.getString("media") == "true"
             val isBidirectional = backStackEntry.arguments?.getString("bidi") == "true"
             val requiresProjection = backStackEntry.arguments?.getString("reqProj") == "true"
@@ -232,7 +229,7 @@ fun ProxiTapApp() {
             LaunchedEffect(name, pin, activeManager) {
                 if (activeManager != null) {
                     try {
-                        servicePayload = activeManager.startHosting(name, pin, isMediaLobby, isBidirectional, enableRadar, isGroupVoice)
+                        servicePayload = activeManager.startHosting(name, pin, isMediaLobby, isBidirectional, isGroupVoice)
                         hostNetworkReady = true
                     } catch (e: Exception) {
                         android.util.Log.e("MainActivity", "Failed to start hosting", e)
@@ -267,7 +264,7 @@ fun ProxiTapApp() {
                 servicePayload?.let { payload ->
                     val cleanPayload = payload.removePrefix("PROXI:NAN:S:").removePrefix("WIFI:T:WPA;S:")
                     val encodedPayload = java.net.URLEncoder.encode(cleanPayload, "UTF-8")
-                    "https://pt.htsth.app/join?mode=$modeStr&radar=$enableRadar&service=$encodedPayload&media=$isMediaLobby&bidi=$isBidirectional&groupVoice=$isGroupVoice"
+                    "https://pt.htsth.app/join?mode=$modeStr&service=$encodedPayload&media=$isMediaLobby&bidi=$isBidirectional&groupVoice=$isGroupVoice"
                 }
             }
 
@@ -289,7 +286,7 @@ fun ProxiTapApp() {
                     qrPayload = finalPayload,
                     qrBitmap = qrBitmap,
                     onStartCallClick = { 
-                        navController.navigate("call?mode=$modeStr&radar=$enableRadar&media=$isMediaLobby&bidi=$isBidirectional&groupVoice=$isGroupVoice") 
+                        navController.navigate("call?mode=$modeStr&media=$isMediaLobby&bidi=$isBidirectional&groupVoice=$isGroupVoice") 
                     }
                 )
             } else {
@@ -324,12 +321,11 @@ fun ProxiTapApp() {
             )
         }
         composable(
-            route = "call?mode={mode}&radar={radar}&service={service}&pin={pin}&media={media}&bidi={bidi}&groupVoice={groupVoice}",
-            deepLinks = listOf(navDeepLink { uriPattern = "https://pt.htsth.app/join?mode={mode}&radar={radar}&service={service}&pin={pin}&media={media}&bidi={bidi}&groupVoice={groupVoice}" })
+            route = "call?mode={mode}&service={service}&pin={pin}&media={media}&bidi={bidi}&groupVoice={groupVoice}",
+            deepLinks = listOf(navDeepLink { uriPattern = "https://pt.htsth.app/join?mode={mode}&service={service}&pin={pin}&media={media}&bidi={bidi}&groupVoice={groupVoice}" })
         ) { backStackEntry ->
             val service = backStackEntry.arguments?.getString("service")
             val mode = backStackEntry.arguments?.getString("mode") ?: "nan"
-            val enableRadar = backStackEntry.arguments?.getString("radar") == "true"
             val isMediaLobby = backStackEntry.arguments?.getString("media") == "true"
             val isBidirectional = backStackEntry.arguments?.getString("bidi") == "true"
             val isGroupVoice = backStackEntry.arguments?.getString("groupVoice") == "true"
@@ -406,20 +402,7 @@ fun ProxiTapApp() {
                 }
             }
 
-            // Radar Distance Tracking (Only for NAN mode when enabled)
-            val connectedNanPeers by (callService?.nanImpl?.connectedPeers ?: kotlinx.coroutines.flow.MutableStateFlow(emptyList())).collectAsState()
-            LaunchedEffect(enableRadar, connectedNanPeers, callService) {
-                if (enableRadar && mode == "nan" && callService != null) {
-                    callService?.distanceTracker?.isTrackingEnabled = true
-                    callService?.distanceTracker?.startTracking(connectedNanPeers)
-                } else {
-                    callService?.distanceTracker?.stopTracking()
-                }
-            }
-
-            val peerDistances by (callService?.distanceTracker?.peerDistances ?: kotlinx.coroutines.flow.MutableStateFlow(emptyMap())).collectAsState()
-            // We only have one peer in V1 (Host->Peer or Peer->Host), so we take the first distance if available
-            val currentDistanceMeters = peerDistances.values.firstOrNull()
+            // Distance tracking is removed
 
             DisposableEffect(context) {
                 val activity = context as? android.app.Activity
@@ -497,7 +480,6 @@ fun ProxiTapApp() {
                     isHost = isActualHost,
                     isMuted = isMuted,
                     isSpeaking = isSpeaking,
-                    distanceMeters = currentDistanceMeters,
                     isConnecting = isConnecting,
                     isReconnecting = isReconnecting,
                     isMediaLobby = isMediaLobby,
@@ -511,7 +493,7 @@ fun ProxiTapApp() {
                             popUpTo("home") { inclusive = true }
                         }
                     },
-                    onSettingsClick = { navController.navigate("settings?media=$isMediaLobby&host=$isActualHost&group=${callService?.isGroupVoice ?: false}") },
+                    onSettingsClick = { navController.navigate("settings?media=$isMediaLobby&host=$isActualHost&group=${callService?.isGroupVoice ?: false}&bidi=$isBidirectional") },
                     onShowQrCodeClick = { 
                         hostQrPayload?.let { payload ->
                             navController.navigate("qr?payload=${java.net.URLEncoder.encode(payload, "UTF-8")}")
@@ -521,20 +503,23 @@ fun ProxiTapApp() {
             }
         }
         composable(
-            route = "settings?media={media}&host={host}&group={group}",
+            route = "settings?media={media}&host={host}&group={group}&bidi={bidi}",
             arguments = listOf(
                 androidx.navigation.navArgument("media") { defaultValue = "false" },
                 androidx.navigation.navArgument("host") { defaultValue = "true" },
-                androidx.navigation.navArgument("group") { defaultValue = "false" }
+                androidx.navigation.navArgument("group") { defaultValue = "false" },
+                androidx.navigation.navArgument("bidi") { defaultValue = "false" }
             )
         ) { backStackEntry ->
             val isMediaRoute = backStackEntry.arguments?.getString("media") == "true"
             val isHostRoute = backStackEntry.arguments?.getString("host") == "true"
             val isGroupRoute = backStackEntry.arguments?.getString("group") == "true"
+            val isBidiRoute = backStackEntry.arguments?.getString("bidi") == "true"
             SettingsScreen(
                 isHost = isHostRoute,
                 isMediaLobby = isMediaRoute,
                 isGroupVoice = isGroupRoute,
+                isBidirectional = isBidiRoute,
                 onBackClick = { navController.popBackStack() }
             )
         }

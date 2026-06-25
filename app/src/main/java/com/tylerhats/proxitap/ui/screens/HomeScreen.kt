@@ -13,14 +13,13 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 fun HomeScreen(
-    onHostClick: (String, String?, Boolean, Boolean, Boolean, Boolean, Boolean) -> Unit,
+    onHostClick: (String, String?, Boolean, Boolean, Boolean, Boolean) -> Unit,
     onJoinClick: () -> Unit,
     onSearchAreaClick: () -> Unit
 ) {
     var lobbyName by remember { mutableStateOf("") }
     var pin by remember { mutableStateOf("") }
     var useHotspot by remember { mutableStateOf(false) }
-    var enableRadar by remember { mutableStateOf(false) }
     var callType by remember { mutableStateOf(0) } // 0 = Direct Voice (1-on-1), 1 = Group Voice (3-8 people), 2 = Media Sharing
     var isBidirectional by remember { mutableStateOf(true) }
 
@@ -90,26 +89,8 @@ fun HomeScreen(
                 checked = useHotspot,
                 onCheckedChange = { 
                     useHotspot = it
-                    if (useHotspot) enableRadar = false // Radar requires NAN mode
                 }
             )
-        }
-
-        if (!useHotspot) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Column {
-                    Text("Enable Distance Radar", style = MaterialTheme.typography.bodyLarge)
-                    Text("Requires Wi-Fi RTT. Uses more battery.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                Switch(
-                    checked = enableRadar,
-                    onCheckedChange = { enableRadar = it }
-                )
-            }
         }
         
         Spacer(modifier = Modifier.height(16.dp))
@@ -172,7 +153,7 @@ fun HomeScreen(
                 val isMedia = callType != 0
                 val isBidi = callType == 1 || (callType == 2 && isBidirectional)
                 val reqProj = callType == 2
-                onHostClick(finalName, pin.takeIf { it.isNotBlank() }, useHotspot, enableRadar, isMedia, isBidi, reqProj) 
+                onHostClick(finalName, pin.takeIf { it.isNotBlank() }, useHotspot, isMedia, isBidi, reqProj) 
             },
             modifier = Modifier.fillMaxWidth().height(56.dp)
         ) {

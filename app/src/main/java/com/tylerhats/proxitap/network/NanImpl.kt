@@ -43,7 +43,7 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
     val peerIpToHandleMap = java.util.concurrent.ConcurrentHashMap<String, PeerHandle>()
 
     @SuppressLint("MissingPermission")
-    override suspend fun startHosting(lobbyName: String, pin: String, isMediaLobby: Boolean, isBidirectional: Boolean, enableRadar: Boolean, isGroupVoice: Boolean): String = suspendCancellableCoroutine { continuation ->
+    override suspend fun startHosting(lobbyName: String, pin: String, isMediaLobby: Boolean, isBidirectional: Boolean, isGroupVoice: Boolean): String = suspendCancellableCoroutine { continuation ->
         stop()
         if (wifiAwareManager == null || !context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)) {
             continuation.resumeWithException(Exception("Wi-Fi Aware not supported on this device"))
@@ -57,7 +57,7 @@ class NanImpl(private val context: Context) : LocalNetworkManager {
 
         currentSessionId = UUID.randomUUID().toString().take(8)
         currentPin = pin
-        val serviceInfo = "$lobbyName|${if(pin.isNotBlank()) 1 else 0}|$currentSessionId|${if(isMediaLobby) 1 else 0}|${if(isBidirectional) 1 else 0}|${if(enableRadar) 1 else 0}|${if(isGroupVoice) 1 else 0}"
+        val serviceInfo = "$lobbyName|${if(pin.isNotBlank()) 1 else 0}|$currentSessionId|${if(isMediaLobby) 1 else 0}|${if(isBidirectional) 1 else 0}|${if(isGroupVoice) 1 else 0}"
 
         wifiAwareManager.attach(object : AttachCallback() {
             override fun onAttached(session: WifiAwareSession) {

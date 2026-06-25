@@ -63,3 +63,60 @@ class UdpProxy(
     }
 }
 
+class DirectUdpAudioStreamer(
+    private val localPort: Int,
+    private val remoteIp: String,
+    private val remotePort: Int,
+    private val onAudioFrameReceived: (ByteArray) -> Unit
+) {
+    private var socket: java.net.DatagramSocket? = null
+    private var isRunning = false
+    private val scope = CoroutineScope(Dispatchers.IO + Job())
+
+    fun start() {
+        if (isRunning) return
+        isRunning = true
+        scope.launch {
+            try {
+                val host = remoteIp.replace("[", "").replace("]", "")
+                val remoteAddress = java.net.InetAddress.getByName(host)
+                socket = java.net.DatagramSocket(localPort)
+                val buffer = ByteArray(4096)
+                Log.d("DirectUdpAudio", "Listening on UDP port $localPort, sending to $host:$remotePort")
+                
+                while (isActive && isRunning) {
+                    val packet = java.net.DatagramPacket(buffer, buffer.size)
+                    socket?.receive(packet)
+                    val data = packet.data.copyOf(packet.length)
+                    onAudioFrameReceived(data)
+                }
+            } catch (e: Exception) {
+                if (isRunning) {
+                    Log.e("DirectUdpAudio", "Error in UDP receiver", e)
+                }
+            }
+        }
+    }
+
+    fun sendAudio(data: ByteArray) {
+        if (!isRunning) return
+        scope.launch {
+            try {
+                val host = remoteIp.replace("[", "").replace("]", "")
+                val remoteAddress = java.net.InetAddress.getByName(host)
+                val packet = java.net.DatagramPacket(data, data.size, remoteAddress, remotePort)
+                socket?.send(packet)
+            } catch (e: Exception) {
+                Log.e("DirectUdpAudio", "Error sending UDP audio", e)
+            }
+        }
+    }
+
+    fun stop() {
+        isRunning = false
+        socket?.close()
+        socket = null
+        scope.cancel()
+    }
+}
+

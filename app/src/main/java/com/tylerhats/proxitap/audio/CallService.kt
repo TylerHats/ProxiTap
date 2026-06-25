@@ -109,13 +109,13 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
     private var myIcePort: Int? = null
     private var remoteIcePort: Int? = null
     private var udpProxy: UdpProxy? = null
+    private var directUdpStreamer: DirectUdpAudioStreamer? = null
     var isHostSignaling = false
         private set
     
     // Network Lifecycle decoupled from UI
     lateinit var nanImpl: com.tylerhats.proxitap.network.NanImpl
     lateinit var hotspotImpl: com.tylerhats.proxitap.network.HotspotImpl
-    lateinit var distanceTracker: com.tylerhats.proxitap.network.DistanceTracker
     
     fun getNetworkManager(mode: String?): com.tylerhats.proxitap.network.LocalNetworkManager {
         return if (mode == "hotspot") hotspotImpl else nanImpl
@@ -156,6 +156,24 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         }
     }
 
+    private fun startDirectUdpStreamer(remoteIp: String) {
+        if (directUdpStreamer != null) {
+            Log.d("CallService", "Direct UDP Streamer already running")
+            return
+        }
+        Log.d("CallService", "Starting Direct UDP Streamer targeting remote IP: $remoteIp")
+        directUdpStreamer = DirectUdpAudioStreamer(
+            localPort = 8085,
+            remoteIp = remoteIp,
+            remotePort = 8085
+        ) { audioData ->
+            scope.launch {
+                mediaStreamer?.playAudioData(audioData)
+            }
+        }
+        directUdpStreamer?.start()
+    }
+
     inner class LocalBinder : Binder() {
         fun getService(): CallService = this@CallService
     }
@@ -165,7 +183,6 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         
         nanImpl = com.tylerhats.proxitap.network.NanImpl(this)
         hotspotImpl = com.tylerhats.proxitap.network.HotspotImpl(this)
-        distanceTracker = com.tylerhats.proxitap.network.DistanceTracker(this)
         
         createNotificationChannel()
         
@@ -230,41 +247,19 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             registerReceiver(pttReceiver, filter)
         }
 
-        // Reactive combined participants distance tracking
+        // Reactive combined participants tracking (without distance)
         scope.launch {
-            combine(
-                _rawParticipants,
-                distanceTracker.peerDistances
-            ) { plist, distances ->
-                plist.map { p ->
+            _rawParticipants.collect { plist ->
+                val formattedList = plist.map { p ->
                     val isMe = (p.id == myPeerId) || (isHostSignaling && p.id == "HOST")
-                    var distStr = ""
-                    if (!isMe) {
-                        val distance = if (isHostSignaling) {
-                            val ip = signalingServer?.peerIpAddresses?.get(p.id)
-                            val handle = ip?.let { nanImpl.peerIpToHandleMap[it] }
-                            distances[handle]
-                        } else {
-                            if (p.isHost) {
-                                distances.values.firstOrNull()
-                            } else {
-                                null
-                            }
-                        }
-                        if (distance != null) {
-                            distStr = " - %.1fm".format(distance)
-                        }
-                    }
-
                     val suffix = when {
                         isMe && p.isHost -> " (You, Host)"
                         isMe -> " (You)"
                         p.isHost -> " (Host)"
                         else -> ""
                     }
-                    "${p.name}$suffix$distStr"
+                    "${p.name}$suffix"
                 }
-            }.collect { formattedList ->
                 _participants.value = formattedList
             }
         }
@@ -327,10 +322,15 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                 val projection = mediaProjectionManager.getMediaProjection(mediaResult, mediaData)
                 if (projection != null) {
                     mediaStreamer?.startCapture(projection) { audioData ->
-                        if (isHostSignaling) {
-                            outgoingAudioChannel.trySend(audioData)
+                        val isDirectUdpMedia = isMediaLobby && isBidirectional && !isGroupVoice
+                        if (isDirectUdpMedia) {
+                            directUdpStreamer?.sendAudio(audioData)
                         } else {
-                            signalingClient?.sendAudioData(audioData)
+                            if (isHostSignaling) {
+                                outgoingAudioChannel.trySend(audioData)
+                            } else {
+                                signalingClient?.sendAudioData(audioData)
+                            }
                         }
                     }
                 }
@@ -531,7 +531,7 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                 }
             }
             "max_participants" -> {
-                val maxParts = if (!isMediaLobby) 2 else sharedPreferences.getInt(key, 4)
+                val maxParts = if (!isMediaLobby || (isBidirectional && !isGroupVoice)) 2 else sharedPreferences.getInt(key, 4)
                 signalingServer?.maxParticipants = maxParts
             }
         }
@@ -605,7 +605,7 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             
             val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
             val hostDisplayName = prefs.getString("display_name", Build.MODEL) ?: Build.MODEL
-            val maxParts = if (!isMediaLobby) 2 else prefs.getInt("max_participants", 4)
+            val maxParts = if (!isMediaLobby || (isBidirectional && !isGroupVoice)) 2 else prefs.getInt("max_participants", 4)
             signalingServer = SignalingServer().apply {
                 hostName = hostDisplayName
                 maxParticipants = maxParts
@@ -617,6 +617,14 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                 val type = json.getString("type")
                 if (type == "JOIN") {
                     Log.d("CallService", "Peer $senderId joined.")
+                    if (isMediaLobby && isBidirectional && !isGroupVoice) {
+                        val peerIp = signalingServer?.peerIpAddresses?.get(senderId)
+                        if (peerIp != null) {
+                            startDirectUdpStreamer(peerIp)
+                        } else {
+                            Log.e("CallService", "Could not find IP address for peer $senderId")
+                        }
+                    }
                     
                     if (!isMediaLobby) {
                         val signalingCallback = object : WebRtcClient.SignalingCallback {
@@ -734,6 +742,9 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             }
             
             isHostSignaling = false
+        if (isMediaLobby && isBidirectional && !isGroupVoice) {
+            startDirectUdpStreamer(hostIp)
+        }
 
         val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
         val deviceName = prefs.getString("display_name", Build.MODEL) ?: Build.MODEL
@@ -974,6 +985,9 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         try { udpProxy?.stop() } catch (e: Exception) { Log.e("CallService", "Error stopping udpProxy", e) }
         udpProxy = null
         
+        try { directUdpStreamer?.stop() } catch (e: Exception) { Log.e("CallService", "Error stopping directUdpStreamer", e) }
+        directUdpStreamer = null
+
         try { mediaStreamer?.stop() } catch (e: Exception) { Log.e("CallService", "Error stopping mediaStreamer", e) }
         mediaStreamer = null
         
@@ -1000,7 +1014,6 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         try {
             nanImpl.stop()
             hotspotImpl.stop()
-            distanceTracker.stopTracking()
         } catch (e: Exception) { Log.e("CallService", "Error stopping network managers", e) }
         
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {

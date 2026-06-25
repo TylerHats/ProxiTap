@@ -86,7 +86,7 @@ fun ServerListScreen(
                                 )
                                 if (lobby.isMedia) {
                                     val parts = lobby.payload.split("|")
-                                    val isGroup = if (parts.size >= 7) parts[6] == "1" else false
+                                    val isGroup = if (parts.size >= 6) parts[5] == "1" else false
                                     Text(
                                         text = if (isGroup) "Group Voice Call"
                                                else if (lobby.isBidi) "Media (Bidirectional)"
