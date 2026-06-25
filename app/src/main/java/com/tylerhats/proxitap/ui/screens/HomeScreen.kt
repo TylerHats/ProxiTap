@@ -93,6 +93,16 @@ fun HomeScreen(
             )
         }
         
+        if (useHotspot) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "⚠️ Warning: Hotspot mode will disable Wi-Fi internet access on client devices. Use Wi-Fi Aware (NAN) mode instead if internet is required (e.g. for the Web Player).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.align(Alignment.Start)
+            )
+        }
+        
         Spacer(modifier = Modifier.height(16.dp))
         Text("Call Type", style = MaterialTheme.typography.titleMedium, modifier = Modifier.align(Alignment.Start))
         Spacer(modifier = Modifier.height(8.dp))

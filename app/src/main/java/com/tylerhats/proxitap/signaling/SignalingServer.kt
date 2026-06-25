@@ -86,6 +86,15 @@ class SignalingServer {
                                     val json = JSONObject(message)
                                     val type = json.getString("type")
                                     
+                                    if (type == "PING") {
+                                        val pong = JSONObject().apply {
+                                            put("type", "PONG")
+                                            put("timestamp", json.optLong("timestamp"))
+                                        }
+                                        send(Frame.Text(pong.toString()))
+                                        return@consumeEach
+                                    }
+                                    
                                     if (type == "JOIN") {
                                         currentPeerId = json.getString("peerId")
                                         val deviceName = if (json.has("deviceName")) json.getString("deviceName") else "Unknown Device"

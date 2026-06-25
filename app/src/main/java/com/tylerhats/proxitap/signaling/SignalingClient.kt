@@ -94,14 +94,23 @@ class SignalingClient(private val hostIp: String, private val port: Int = 8080) 
                                     val text = frame.readText()
                                     Log.d("SignalingClient", "Received message: $text")
                                     val json = JSONObject(text)
-                                    if (json.optString("type") == "SESSION_CLOSED") {
+                                    val type = json.optString("type")
+                                    if (type == "SESSION_CLOSED") {
                                         Log.d("SignalingClient", "Host closed the session. Disconnecting intentionally.")
                                         isIntentionallyDisconnected = true
                                         _incomingMessages.tryEmit(json)
                                         session?.close(CloseReason(CloseReason.Codes.NORMAL, "Host closed session"))
                                         return@consumeEach
                                     }
-                                    _incomingMessages.tryEmit(json)
+                                    if (type == "PING") {
+                                        val pong = JSONObject().apply {
+                                            put("type", "PONG")
+                                            put("timestamp", json.optLong("timestamp"))
+                                        }
+                                        send(Frame.Text(pong.toString()))
+                                    } else {
+                                        _incomingMessages.tryEmit(json)
+                                    }
                                 } else if (frame is Frame.Binary) {
                                     val bytes = frame.readBytes()
                                     _incomingAudio.tryEmit(bytes)

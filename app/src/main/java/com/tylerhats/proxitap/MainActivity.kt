@@ -28,6 +28,8 @@ import androidx.navigation.navDeepLink
 import com.tylerhats.proxitap.ui.screens.*
 import com.tylerhats.proxitap.ui.theme.ProxiTapTheme
 import kotlinx.coroutines.launch
+import com.tylerhats.proxitap.audio.PeerQuality
+import com.tylerhats.proxitap.audio.RawParticipant
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -438,6 +440,8 @@ fun ProxiTapApp() {
             val isMuted by callService?.isMuted?.collectAsState() ?: remember { mutableStateOf(false) }
             val participants by (callService?.participants ?: kotlinx.coroutines.flow.MutableStateFlow(emptyList())).collectAsState()
             val stats by (callService?.connectionStats ?: kotlinx.coroutines.flow.MutableStateFlow(emptyMap())).collectAsState()
+            val peerQualities by (callService?.peerQualities ?: kotlinx.coroutines.flow.MutableStateFlow(emptyMap())).collectAsState()
+            val rawParticipants by (callService?.rawParticipants ?: kotlinx.coroutines.flow.MutableStateFlow(emptyList())).collectAsState()
             
             val isActualHost = callService?.isHostSignaling ?: isHost
             
@@ -485,6 +489,8 @@ fun ProxiTapApp() {
                     isMediaLobby = isMediaLobby,
                     isGroupVoice = callService?.isGroupVoice ?: isGroupVoice,
                     participants = participants,
+                    rawParticipants = rawParticipants,
+                    peerQualities = peerQualities,
                     stats = stats,
                     onMuteToggle = { callService?.toggleMute() },
                     onEndCallClick = { 

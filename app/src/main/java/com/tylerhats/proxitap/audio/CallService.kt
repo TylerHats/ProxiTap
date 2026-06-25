@@ -32,6 +32,19 @@ import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import java.util.UUID
 import android.content.SharedPreferences
+data class RawParticipant(
+    val id: String,
+    val name: String,
+    val isHost: Boolean
+)
+
+data class PeerQuality(
+    val peerId: String,
+    val deviceName: String,
+    val pingMs: Long?,
+    val packetLossRate: Float?,
+    val isHost: Boolean
+)
 
 class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListener {
 
@@ -62,12 +75,12 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
     val participants: StateFlow<List<String>> = _participants
 
     private val _rawParticipants = MutableStateFlow<List<RawParticipant>>(emptyList())
+    val rawParticipants: StateFlow<List<RawParticipant>> = _rawParticipants
     
-    private data class RawParticipant(
-        val id: String,
-        val name: String,
-        val isHost: Boolean
-    )
+    private val _peerQualities = MutableStateFlow<Map<String, PeerQuality>>(emptyMap())
+    val peerQualities: StateFlow<Map<String, PeerQuality>> = _peerQualities
+    
+    private val peerPings = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     private val _isMuted = MutableStateFlow(false)
     val isMuted: StateFlow<Boolean> = _isMuted
@@ -432,6 +445,115 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                 stats["WebRTC Mode"] = if (::webRtcClient.isInitialized) "Initialized" else "Not Initialized"
                 
                 _connectionStats.value = stats
+
+                // --- Connection Quality Updates ---
+                if (_hasJoined.value) {
+                    // 1. Send Ping Messages
+                    val pingMsg = JSONObject().apply {
+                        put("type", "PING")
+                        put("timestamp", System.currentTimeMillis())
+                    }
+                    if (isHostSignaling) {
+                        _rawParticipants.value.forEach { p ->
+                            if (p.id != "HOST") {
+                                scope.launch {
+                                    signalingServer?.sendMessageToPeer(p.id, pingMsg)
+                                }
+                            }
+                        }
+                    } else {
+                        scope.launch {
+                            signalingClient?.sendMessage(pingMsg)
+                        }
+                    }
+
+                    // 2. Query and calculate quality for each participant
+                    val currentRawParts = _rawParticipants.value
+                    val newQualities = mutableMapOf<String, PeerQuality>()
+                    
+                    currentRawParts.forEach { p ->
+                        val isMe = (p.id == myPeerId) || (isHostSignaling && p.id == "HOST")
+                        if (!isMe) {
+                            val ping = peerPings[p.id] // signaling ping
+                            
+                            if (isMediaLobby && isBidirectional && !isGroupVoice) {
+                                // Direct UDP Call
+                                val lossRate = directUdpStreamer?.lossTracker?.getLossRate()
+                                newQualities[p.id] = PeerQuality(
+                                    peerId = p.id,
+                                    deviceName = p.name,
+                                    pingMs = ping,
+                                    packetLossRate = lossRate,
+                                    isHost = p.isHost
+                                )
+                            } else if (!isMediaLobby) {
+                                // WebRTC Call
+                                webRtcClient.getPeerConnectionQuality(p.id) { rtt, loss ->
+                                    val rttVal = rtt?.toLong() ?: ping
+                                    val q = PeerQuality(
+                                        peerId = p.id,
+                                        deviceName = p.name,
+                                        pingMs = rttVal,
+                                        packetLossRate = loss,
+                                        isHost = p.isHost
+                                    )
+                                    synchronized(_peerQualities) {
+                                        val currentMap = _peerQualities.value.toMutableMap()
+                                        currentMap[p.id] = q
+                                        _peerQualities.value = currentMap
+                                    }
+                                }
+                            } else {
+                                // Media Broadcast
+                                newQualities[p.id] = PeerQuality(
+                                    peerId = p.id,
+                                    deviceName = p.name,
+                                    pingMs = ping,
+                                    packetLossRate = 0f,
+                                    isHost = p.isHost
+                                )
+                            }
+                        }
+                    }
+
+                    // Clean up qualities of participants who left
+                    val validIds = currentRawParts.map { it.id }.toSet()
+                    synchronized(_peerQualities) {
+                        val currentMap = _peerQualities.value.toMutableMap()
+                        currentMap.keys.retainAll(validIds)
+                        newQualities.forEach { (id, q) ->
+                            currentMap[id] = q
+                        }
+                        _peerQualities.value = currentMap
+                    }
+
+                    // 3. If Host, broadcast qualities to all peers
+                    if (isHostSignaling) {
+                        val updateMsg = JSONObject().apply {
+                            put("type", "QUALITIES_UPDATE")
+                            val array = org.json.JSONArray()
+                            _peerQualities.value.forEach { (peerId, q) ->
+                                val item = JSONObject().apply {
+                                    put("peerId", peerId)
+                                    put("pingMs", q.pingMs ?: -1L)
+                                    put("packetLossRate", q.packetLossRate?.toDouble() ?: -1.0)
+                                }
+                                array.put(item)
+                            }
+                            put("qualities", array)
+                        }
+                        scope.launch {
+                            signalingServer?.broadcastMessage(updateMsg)
+                        }
+                    }
+                } else {
+                    // Reset peer qualities when not in a call
+                    if (_peerQualities.value.isNotEmpty()) {
+                        _peerQualities.value = emptyMap()
+                    }
+                    peerPings.clear()
+                }
+
                 kotlinx.coroutines.delay(2000)
             }
         }
@@ -613,6 +735,14 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         scope.launch {
             signalingServer?.incomingMessages?.collect { (senderId, json) ->
                 val type = json.getString("type")
+                if (type == "PONG") {
+                    val timestamp = json.optLong("timestamp")
+                    if (timestamp > 0L) {
+                        val rtt = System.currentTimeMillis() - timestamp
+                        peerPings[senderId] = rtt
+                    }
+                    return@collect
+                }
                 if (type == "JOIN") {
                     Log.d("CallService", "Peer $senderId joined.")
                     if (isMediaLobby && isBidirectional && !isGroupVoice) {
@@ -812,6 +942,41 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         scope.launch {
             signalingClient?.incomingMessages?.collect { json ->
                 val type = json.getString("type")
+                if (type == "PONG") {
+                    val timestamp = json.optLong("timestamp")
+                    if (timestamp > 0L) {
+                        val rtt = System.currentTimeMillis() - timestamp
+                        peerPings["HOST"] = rtt
+                    }
+                    return@collect
+                }
+                if (type == "QUALITIES_UPDATE") {
+                    val array = json.getJSONArray("qualities")
+                    val currentParts = _rawParticipants.value
+                    val newQualities = _peerQualities.value.toMutableMap()
+                    for (i in 0 until array.length()) {
+                        val obj = array.getJSONObject(i)
+                        val peerId = obj.getString("peerId")
+                        if (peerId == myPeerId) continue
+                        
+                        val part = currentParts.find { it.id == peerId }
+                        val deviceName = part?.name ?: "Unknown Device"
+                        val isHost = part?.isHost ?: false
+                        
+                        val ping = obj.getLong("pingMs")
+                        val loss = obj.getDouble("packetLossRate")
+                        
+                        newQualities[peerId] = PeerQuality(
+                            peerId = peerId,
+                            deviceName = deviceName,
+                            pingMs = if (ping >= 0) ping else null,
+                            packetLossRate = if (loss >= 0) loss.toFloat() else null,
+                            isHost = isHost
+                        )
+                    }
+                    _peerQualities.value = newQualities
+                    return@collect
+                }
                 if (type == "REJECT") {
                     val reason = json.optString("reason", "Lobby is full")
                     Log.w("CallService", "Rejected by Host: $reason")

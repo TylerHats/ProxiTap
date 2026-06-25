@@ -355,4 +355,56 @@ class WebRtcClient(private val context: Context) {
             Log.e("WebRtcClient", "Error disposing old audio source", e)
         }
     }
+
+    private val lastPacketsLost = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val lastPacketsReceived = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    fun getPeerConnectionQuality(peerId: String, callback: (rttMs: Double?, packetLossRate: Float?) -> Unit) {
+        val pc = peerConnections[peerId]
+        if (pc == null) {
+            callback(null, null)
+            return
+        }
+        pc.getStats { report ->
+            var rtt: Double? = null
+            var packetsReceived: Long? = null
+            var packetsLost: Long? = null
+            
+            for (stat in report.statsMap.values) {
+                if (stat.type == "candidate-pair") {
+                    val currentRtt = (stat.members["currentRoundTripTime"] as? Number)?.toDouble()
+                    if (currentRtt != null) {
+                        rtt = currentRtt * 1000.0
+                    }
+                }
+                if (stat.type == "inbound-rtp" && stat.members["kind"] == "audio") {
+                    val lost = (stat.members["packetsLost"] as? Number)?.toLong()
+                    val received = (stat.members["packetsReceived"] as? Number)?.toLong()
+                    if (lost != null) packetsLost = lost
+                    if (received != null) packetsReceived = received
+                }
+            }
+            
+            val lossRate = if (packetsLost != null && packetsReceived != null) {
+                val lastLost = lastPacketsLost[peerId] ?: 0L
+                val lastReceived = lastPacketsReceived[peerId] ?: 0L
+                
+                val deltaLost = (packetsLost - lastLost).coerceAtLeast(0L)
+                val deltaReceived = (packetsReceived - lastReceived).coerceAtLeast(0L)
+                
+                lastPacketsLost[peerId] = packetsLost
+                lastPacketsReceived[peerId] = packetsReceived
+                
+                val deltaTotal = deltaLost + deltaReceived
+                if (deltaTotal > 0) {
+                    (deltaLost.toFloat() / deltaTotal.toFloat()) * 100f
+                } else {
+                    0f
+                }
+            } else {
+                null
+            }
+            callback(rtt, lossRate)
+        }
+    }
 }

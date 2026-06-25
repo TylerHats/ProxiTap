@@ -73,6 +73,7 @@ fun WebBrowserScreen(
     var bookmarks by remember { mutableStateOf(getBookmarks(context)) }
     var currentUrl by remember { mutableStateOf("pt://newtab") }
     var urlInput by remember { mutableStateOf("") }
+    var isDesktopMode by remember { mutableStateOf(false) }
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
     
     val isBookmarked = remember(currentUrl, bookmarks) {
@@ -185,6 +186,17 @@ fun WebBrowserScreen(
                 }
             }
 
+            // Desktop Mode Toggle
+            if (currentUrl != "pt://newtab" && currentUrl != "about:blank") {
+                IconButton(
+                    onClick = {
+                        isDesktopMode = !isDesktopMode
+                    }
+                ) {
+                    Text(if (isDesktopMode) "💻" else "📱")
+                }
+            }
+
             IconButton(onClick = onCloseClick) {
                 Text("❌")
             }
@@ -268,6 +280,17 @@ fun WebBrowserScreen(
                 },
                 update = { webView ->
                     webViewRef.value = webView
+                    
+                    val desktopUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    val mobileUA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+                    
+                    val targetUA = if (isDesktopMode) desktopUA else mobileUA
+                    if (webView.settings.userAgentString != targetUA) {
+                        webView.settings.userAgentString = targetUA
+                        webView.settings.useWideViewPort = isDesktopMode
+                        webView.settings.loadWithOverviewMode = isDesktopMode
+                        webView.reload()
+                    }
                 },
                 modifier = Modifier.fillMaxSize()
             )

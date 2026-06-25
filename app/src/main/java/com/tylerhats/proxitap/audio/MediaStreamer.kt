@@ -20,6 +20,8 @@ class MediaStreamer(private val context: Context) {
     private var mediaProjection: MediaProjection? = null
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
+    private var playbackChannel: kotlinx.coroutines.channels.Channel<ByteArray>? = null
+    private var playbackJob: Job? = null
     
     private val scope = CoroutineScope(Dispatchers.IO + Job())
     private var isStreaming = false
@@ -213,16 +215,39 @@ class MediaStreamer(private val context: Context) {
             }
         }
         audioTrack = track
+        
+        val channel = kotlinx.coroutines.channels.Channel<ByteArray>(
+            capacity = 2,
+            onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST
+        )
+        playbackChannel = channel
+        
+        playbackJob = scope.launch(Dispatchers.Default) {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO)
+            try {
+                for (data in channel) {
+                    val activeTrack = audioTrack ?: break
+                    activeTrack.write(data, 0, data.size)
+                }
+            } catch (e: Exception) {
+                Log.e("MediaStreamer", "Error in playback loop", e)
+            }
+        }
+        
         track.play()
     }
 
-    @Synchronized
     fun playAudioData(data: ByteArray) {
-        audioTrack?.write(data, 0, data.size)
+        playbackChannel?.trySend(data)
     }
 
     fun stop() {
         isStreaming = false
+        try { playbackChannel?.close() } catch (e: Exception) {}
+        playbackChannel = null
+        try { playbackJob?.cancel() } catch (e: Exception) {}
+        playbackJob = null
+        
         try { scope.cancel() } catch (e: Exception) {}
         
         try {

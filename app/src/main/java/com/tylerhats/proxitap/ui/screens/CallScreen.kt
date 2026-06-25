@@ -1,8 +1,10 @@
 package com.tylerhats.proxitap.ui.screens
 
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
@@ -14,6 +16,8 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.tylerhats.proxitap.audio.PeerQuality
+import com.tylerhats.proxitap.audio.RawParticipant
 
 @Composable
 fun CallScreen(
@@ -25,6 +29,8 @@ fun CallScreen(
     isMediaLobby: Boolean = false,
     isGroupVoice: Boolean = false,
     participants: List<String> = emptyList(),
+    rawParticipants: List<RawParticipant> = emptyList(),
+    peerQualities: Map<String, PeerQuality> = emptyMap(),
     stats: Map<String, String> = emptyMap(),
     onMuteToggle: () -> Unit,
     onEndCallClick: () -> Unit,
@@ -50,6 +56,8 @@ fun CallScreen(
         )
     )
 
+    var showDialogForPeerName by remember { mutableStateOf<Pair<String, PeerQuality?>?>(null) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -66,7 +74,22 @@ fun CallScreen(
                 text = if (isHost) "Host Lobby" else "Connected",
                 style = MaterialTheme.typography.titleLarge
             )
-            Row {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Show signal strength at the top for 1-on-1 calls
+                if (!isGroupVoice) {
+                    val remoteParticipantIndex = participants.indexOfFirst { !it.contains("(You)") }
+                    if (remoteParticipantIndex != -1 && rawParticipants.size > remoteParticipantIndex) {
+                        val rp = rawParticipants[remoteParticipantIndex]
+                        val quality = peerQualities[rp.id]
+                        SignalStrengthIndicator(
+                            quality = quality,
+                            modifier = Modifier.padding(end = 8.dp),
+                            onClick = {
+                                showDialogForPeerName = rp.name to quality
+                            }
+                        )
+                    }
+                }
                 if (isHost && onShowQrCodeClick != null) {
                     IconButton(onClick = onShowQrCodeClick) {
                         Text("QR")
@@ -142,12 +165,28 @@ fun CallScreen(
             ) {
                 items(participants.size) { index ->
                     val rawName = participants[index]
-                    Text(
-                        text = "• $rawName",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(vertical = 4.dp)
-                    )
+                    val isMe = rawName.contains("(You)")
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "• $rawName",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (!isMe && isGroupVoice && rawParticipants.size > index) {
+                            val rp = rawParticipants[index]
+                            val quality = peerQualities[rp.id]
+                            SignalStrengthIndicator(
+                                quality = quality,
+                                onClick = {
+                                    showDialogForPeerName = rp.name to quality
+                                }
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -273,6 +312,73 @@ fun CallScreen(
             ) {
                 Text(if (isHost) "End Call" else "Leave", color = MaterialTheme.colorScheme.onError)
             }
+        }
+    }
+
+    if (showDialogForPeerName != null) {
+        val (name, q) = showDialogForPeerName!!
+        AlertDialog(
+            onDismissRequest = { showDialogForPeerName = null },
+            title = { Text(name) },
+            text = {
+                Column {
+                    Text("Latency (Ping RTT): ${q?.pingMs?.let { "${it} ms" } ?: "Measuring..."}")
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Packet Loss Rate: ${q?.packetLossRate?.let { String.format(java.util.Locale.US, "%.1f%%", it) } ?: "Measuring..."}")
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDialogForPeerName = null }) {
+                    Text("Close")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun SignalStrengthIndicator(
+    quality: PeerQuality?,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val ping = quality?.pingMs
+    val loss = quality?.packetLossRate
+    
+    // Determine level and color:
+    // Green (3 bars): Excellent (Ping < 50ms, Loss < 1%)
+    // Yellow (2 bars): Fair (Ping 50ms - 150ms, Loss 1% - 5%)
+    // Red (1 bar): Poor (Ping > 150ms or Loss > 5%)
+    // If null/unknown: Gray (0 bars / dot / question mark)
+    val (bars, color) = when {
+        ping == null || loss == null -> 0 to Color.Gray
+        ping > 150 || loss > 5f -> 1 to Color(0xFFEF5350) // Soft Red
+        ping > 50 || loss > 1f -> 2 to Color(0xFFFFB74D) // Soft Orange/Yellow
+        else -> 3 to Color(0xFF66BB6A) // Soft Green
+    }
+    
+    Canvas(
+        modifier = modifier
+            .size(24.dp)
+            .clickable(onClick = onClick)
+    ) {
+        val width = size.width
+        val height = size.height
+        val barWidth = width / 7f
+        val gap = width / 7f
+        
+        for (i in 0 until 3) {
+            val barHeight = height * ((i + 1) / 3f)
+            val x = i * (barWidth + gap) + gap
+            val y = height - barHeight
+            
+            val barColor = if (i < bars) color else Color.Gray.copy(alpha = 0.3f)
+            
+            drawRect(
+                color = barColor,
+                topLeft = androidx.compose.ui.geometry.Offset(x, y),
+                size = androidx.compose.ui.geometry.Size(barWidth, barHeight)
+            )
         }
     }
 }
