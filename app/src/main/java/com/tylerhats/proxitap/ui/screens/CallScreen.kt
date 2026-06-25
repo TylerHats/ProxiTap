@@ -154,21 +154,25 @@ fun CallScreen(
         
         var showStats by remember { mutableStateOf(false) }
         
-        Spacer(modifier = Modifier.height(16.dp))
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            if (isHost && stats.isNotEmpty()) {
-                OutlinedButton(onClick = { showStats = !showStats }) {
-                    Text(if (showStats) "Hide Diagnostics" else "View Diagnostics")
-                }
-            }
-            Button(
-                onClick = onWebPlayerClick,
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+        if ((isHost && stats.isNotEmpty()) || (isMediaLobby && !isGroupVoice)) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("🌐 Web Player")
+                if (isHost && stats.isNotEmpty()) {
+                    OutlinedButton(onClick = { showStats = !showStats }) {
+                        Text(if (showStats) "Hide Diagnostics" else "View Diagnostics")
+                    }
+                }
+                if (isMediaLobby && !isGroupVoice) {
+                    Button(
+                        onClick = onWebPlayerClick,
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    ) {
+                        Text("🌐 Web Player")
+                    }
+                }
             }
         }
         

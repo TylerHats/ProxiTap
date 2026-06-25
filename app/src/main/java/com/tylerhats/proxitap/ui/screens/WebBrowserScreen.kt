@@ -94,12 +94,16 @@ fun WebBrowserScreen(
         }
     }
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .systemBarsPadding()
             .background(MaterialTheme.colorScheme.background)
     ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .systemBarsPadding()
+        ) {
         // Browser Controls Bar
         Row(
             modifier = Modifier
@@ -188,11 +192,92 @@ fun WebBrowserScreen(
 
         // Main Area
         Box(modifier = Modifier.weight(1f)) {
+            // WebView Component is ALWAYS in composition to preserve state & receive loadUrl requests
+            AndroidView(
+                factory = { ctx ->
+                    WebView(ctx).apply {
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.databaseEnabled = true
+                        settings.cacheMode = WebSettings.LOAD_DEFAULT
+                        settings.mediaPlaybackRequiresUserGesture = false
+                        setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                        
+                        // Enable persistent cookie storage
+                        val cookieManager = CookieManager.getInstance()
+                        cookieManager.setAcceptCookie(true)
+                        cookieManager.setAcceptThirdPartyCookies(this, true)
+                        
+                        // Prevent app redirect prompts
+                        settings.userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+                        
+                        webViewClient = object : WebViewClient() {
+                            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                                super.onPageStarted(view, url, favicon)
+                                url?.let {
+                                    if (it != "about:blank") {
+                                        currentUrl = it
+                                        urlInput = it
+                                    }
+                                }
+                            }
+
+                            override fun onPageFinished(view: WebView?, url: String?) {
+                                super.onPageFinished(view, url)
+                                url?.let {
+                                    if (it != "about:blank") {
+                                        currentUrl = it
+                                        urlInput = it
+                                    }
+                                }
+                            }
+
+                            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                                val url = request?.url?.toString() ?: return false
+                                val urlLower = url.lowercase()
+                                
+                                // Block known deep link/app store / attribution domains
+                                if (urlLower.contains("onelink.me") || 
+                                    urlLower.contains("appsflyer.com") || 
+                                    urlLower.contains("play.google.com/store") || 
+                                    urlLower.contains("app.link") || 
+                                    urlLower.contains("itunes.apple.com") || 
+                                    urlLower.contains("adjust.com") || 
+                                    urlLower.contains("smart.link")) {
+                                    Log.d("WebBrowser", "Blocked app-redirect/store URL: $url")
+                                    return true // handled (blocked)
+                                }
+
+                                // Block deep link schemes (intent://, market://, tiktok://, etc.)
+                                if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                                    Log.d("WebBrowser", "Blocked non-http deep link redirection to: $url")
+                                    return true // handled (blocked)
+                                }
+                                // Force http/https links to load internally inside the web view
+                                view?.loadUrl(url)
+                                return true
+                            }
+                        }
+                        
+                        webChromeClient = WebChromeClient()
+                    }
+                },
+                update = { webView ->
+                    webViewRef.value = webView
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+
             if (currentUrl == "pt://newtab" || currentUrl == "about:blank") {
-                // Bookmarks Grid
+                // Bookmarks Grid overlay (covers the WebView until a page is loaded)
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.background)
                         .padding(16.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
@@ -256,72 +341,8 @@ fun WebBrowserScreen(
                         }
                     }
                 }
-            } else {
-                // WebView Component
-                AndroidView(
-                    factory = { ctx ->
-                        WebView(ctx).apply {
-                            layoutParams = ViewGroup.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.MATCH_PARENT
-                            )
-                            settings.javaScriptEnabled = true
-                            settings.domStorageEnabled = true
-                            settings.databaseEnabled = true
-                            settings.cacheMode = WebSettings.LOAD_DEFAULT
-                            settings.mediaPlaybackRequiresUserGesture = false
-                            
-                            // Enable persistent cookie storage
-                            val cookieManager = CookieManager.getInstance()
-                            cookieManager.setAcceptCookie(true)
-                            cookieManager.setAcceptThirdPartyCookies(this, true)
-                            
-                            // Prevent app redirect prompts
-                            settings.userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-                            
-                            webViewClient = object : WebViewClient() {
-                                override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                                    super.onPageStarted(view, url, favicon)
-                                    url?.let {
-                                        if (it != "about:blank") {
-                                            currentUrl = it
-                                            urlInput = it
-                                        }
-                                    }
-                                }
-
-                                override fun onPageFinished(view: WebView?, url: String?) {
-                                    super.onPageFinished(view, url)
-                                    url?.let {
-                                        if (it != "about:blank") {
-                                            currentUrl = it
-                                            urlInput = it
-                                        }
-                                    }
-                                }
-
-                                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                                    val url = request?.url?.toString() ?: return false
-                                    // Block deep link schemes (intent://, market://, tiktok://, etc.)
-                                    if (!url.startsWith("http://") && !url.startsWith("https://")) {
-                                        Log.d("WebBrowser", "Blocked non-http deep link redirection to: $url")
-                                        return true // handled (blocked)
-                                    }
-                                    // Force http/https links to load internally inside the web view
-                                    view?.loadUrl(url)
-                                    return true
-                                }
-                            }
-                            
-                            webChromeClient = WebChromeClient()
-                        }
-                    },
-                    update = { webView ->
-                        webViewRef.value = webView
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
             }
         }
     }
+}
 }

@@ -57,6 +57,12 @@
                       android:pathPrefix="/join" />
             </intent-filter>
         </activity>
+        
+        <activity
+            android:name=".ui.screens.WebBrowserActivity"
+            android:process=":browser"
+            android:theme="@style/Theme.ProxiTap"
+            android:exported="false" />
 
         <service
             android:name=".audio.CallService"

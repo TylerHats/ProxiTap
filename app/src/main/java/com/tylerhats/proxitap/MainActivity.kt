@@ -494,7 +494,10 @@ fun ProxiTapApp() {
                         }
                     },
                     onSettingsClick = { navController.navigate("settings?media=$isMediaLobby&host=$isActualHost&group=${callService?.isGroupVoice ?: false}&bidi=$isBidirectional") },
-                    onWebPlayerClick = { navController.navigate("webBrowser") },
+                    onWebPlayerClick = { 
+                        val intent = android.content.Intent(context, com.tylerhats.proxitap.ui.screens.WebBrowserActivity::class.java)
+                        context.startActivity(intent)
+                    },
                     onShowQrCodeClick = { 
                         hostQrPayload?.let { payload ->
                             navController.navigate("qr?payload=${java.net.URLEncoder.encode(payload, "UTF-8")}")
@@ -522,11 +525,6 @@ fun ProxiTapApp() {
                 isGroupVoice = isGroupRoute,
                 isBidirectional = isBidiRoute,
                 onBackClick = { navController.popBackStack() }
-            )
-        }
-        composable("webBrowser") {
-            WebBrowserScreen(
-                onCloseClick = { navController.popBackStack() }
             )
         }
     }
