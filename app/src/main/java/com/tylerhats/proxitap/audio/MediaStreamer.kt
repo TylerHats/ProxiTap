@@ -203,6 +203,7 @@ class MediaStreamer(private val context: Context) {
         track.play()
     }
 
+    @Synchronized
     fun playAudioData(data: ByteArray) {
         audioTrack?.write(data, 0, data.size)
     }

@@ -100,15 +100,13 @@ class DirectUdpAudioStreamer(
 
     fun sendAudio(data: ByteArray) {
         if (!isRunning) return
-        scope.launch {
-            try {
-                val host = remoteIp.replace("[", "").replace("]", "")
-                val remoteAddress = java.net.InetAddress.getByName(host)
-                val packet = java.net.DatagramPacket(data, data.size, remoteAddress, remotePort)
-                socket?.send(packet)
-            } catch (e: Exception) {
-                Log.e("DirectUdpAudio", "Error sending UDP audio", e)
-            }
+        try {
+            val host = remoteIp.replace("[", "").replace("]", "")
+            val remoteAddress = java.net.InetAddress.getByName(host)
+            val packet = java.net.DatagramPacket(data, data.size, remoteAddress, remotePort)
+            socket?.send(packet)
+        } catch (e: Exception) {
+            Log.e("DirectUdpAudio", "Error sending UDP audio", e)
         }
     }
 

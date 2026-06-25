@@ -167,9 +167,7 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             remoteIp = remoteIp,
             remotePort = 8085
         ) { audioData ->
-            scope.launch {
-                mediaStreamer?.playAudioData(audioData)
-            }
+            mediaStreamer?.playAudioData(audioData)
         }
         directUdpStreamer?.start()
     }
