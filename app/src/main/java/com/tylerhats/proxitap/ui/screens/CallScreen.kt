@@ -28,6 +28,7 @@ fun CallScreen(
     isReconnecting: Boolean = false,
     isMediaLobby: Boolean = false,
     isGroupVoice: Boolean = false,
+    isBidirectional: Boolean = false,
     participants: List<String> = emptyList(),
     rawParticipants: List<RawParticipant> = emptyList(),
     peerQualities: Map<String, PeerQuality> = emptyMap(),
@@ -56,7 +57,7 @@ fun CallScreen(
         )
     )
 
-    var showDialogForPeerName by remember { mutableStateOf<Pair<String, PeerQuality?>?>(null) }
+    var showDialogForPeerId by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     Column(
         modifier = Modifier
@@ -76,8 +77,14 @@ fun CallScreen(
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // Show signal strength at the top for 1-on-1 calls
-                if (!isGroupVoice) {
-                    val remoteParticipantIndex = participants.indexOfFirst { !it.contains("(You)") }
+                val isGroupStyle = isGroupVoice || (isMediaLobby && !isBidirectional)
+                if (!isGroupStyle) {
+                    val remoteParticipantIndex = participants.indexOfFirst { name ->
+                        val idx = participants.indexOf(name)
+                        val rp = if (rawParticipants.size > idx) rawParticipants[idx] else null
+                        val itemIsMe = name.contains("(You)") || (rp != null && rp.id == "HOST" && isHost)
+                        !itemIsMe
+                    }
                     if (remoteParticipantIndex != -1 && rawParticipants.size > remoteParticipantIndex) {
                         val rp = rawParticipants[remoteParticipantIndex]
                         val quality = peerQualities[rp.id]
@@ -85,7 +92,7 @@ fun CallScreen(
                             quality = quality,
                             modifier = Modifier.padding(end = 8.dp),
                             onClick = {
-                                showDialogForPeerName = rp.name to quality
+                                showDialogForPeerId = rp.id to rp.name
                             }
                         )
                     }
@@ -165,7 +172,8 @@ fun CallScreen(
             ) {
                 items(participants.size) { index ->
                     val rawName = participants[index]
-                    val isMe = rawName.contains("(You)")
+                    val rpItem = if (rawParticipants.size > index) rawParticipants[index] else null
+                    val isMe = rawName.contains("(You)") || (rpItem != null && rpItem.id == "HOST" && isHost)
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -176,13 +184,14 @@ fun CallScreen(
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        if (!isMe && isGroupVoice && rawParticipants.size > index) {
+                        val isGroupStyle = isGroupVoice || (isMediaLobby && !isBidirectional)
+                        if (!isMe && isGroupStyle && rawParticipants.size > index) {
                             val rp = rawParticipants[index]
                             val quality = peerQualities[rp.id]
                             SignalStrengthIndicator(
                                 quality = quality,
                                 onClick = {
-                                    showDialogForPeerName = rp.name to quality
+                                    showDialogForPeerId = rp.id to rp.name
                                 }
                             )
                         }
@@ -315,20 +324,23 @@ fun CallScreen(
         }
     }
 
-    if (showDialogForPeerName != null) {
-        val (name, q) = showDialogForPeerName!!
+    if (showDialogForPeerId != null) {
+        val (peerId, name) = showDialogForPeerId!!
+        val q = peerQualities[peerId]
         AlertDialog(
-            onDismissRequest = { showDialogForPeerName = null },
+            onDismissRequest = { showDialogForPeerId = null },
             title = { Text(name) },
             text = {
                 Column {
                     Text("Latency (Ping RTT): ${q?.pingMs?.let { "${it} ms" } ?: "Measuring..."}")
                     Spacer(modifier = Modifier.height(8.dp))
                     Text("Packet Loss Rate: ${q?.packetLossRate?.let { String.format(java.util.Locale.US, "%.1f%%", it) } ?: "Measuring..."}")
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Audio Bitrate: ${q?.bitrateBps?.let { "${it / 1000} kbps" } ?: "Measuring..."}")
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showDialogForPeerName = null }) {
+                TextButton(onClick = { showDialogForPeerId = null }) {
                     Text("Close")
                 }
             }

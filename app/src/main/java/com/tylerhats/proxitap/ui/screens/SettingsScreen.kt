@@ -32,12 +32,13 @@ fun SettingsScreen(
     var volumePtt by remember { mutableStateOf(prefs.getBoolean("volume_ptt", false)) }
     var showVolumePttDialog by remember { mutableStateOf(false) }
     
-    val bitrateOptions = remember { listOf(8000, 16000, 32000, 64000, 128000, 256000) }
+    val bitrateOptions = remember { listOf(2000, 4000, 8000, 16000, 32000, 64000, 128000, 256000) }
     var currentBitrateIndex by remember {
         val currentBitrate = prefs.getInt("opus_bitrate", 64000)
         val idx = bitrateOptions.indexOf(currentBitrate)
-        mutableStateOf(if (idx != -1) idx.toFloat() else 3f)
+        mutableStateOf(if (idx != -1) idx.toFloat() else 5f)
     }
+    var dynamicBitrateEnabled by remember { mutableStateOf(prefs.getBoolean("dynamic_bitrate_enabled", true)) }
     
     val sampleRateOptions = remember { listOf(8000, 16000, 32000, 44100) }
     var currentSampleRateIndex by remember {
@@ -59,6 +60,7 @@ fun SettingsScreen(
                 "bluetooth_mic" -> bluetoothMic = prefs.getBoolean(key, true)
                 "opus_dtx" -> opusDtx = prefs.getBoolean(key, true)
                 "dtx_threshold" -> dtxThreshold = prefs.getFloat(key, 50f)
+                "dynamic_bitrate_enabled" -> dynamicBitrateEnabled = prefs.getBoolean(key, true)
                 "opus_bitrate" -> {
                     val bitrateVal = prefs.getInt(key, 64000)
                     val idx = bitrateOptions.indexOf(bitrateVal)
@@ -249,6 +251,31 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(16.dp))
             
             if (!isGroupVoice) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Dynamic Quality Adjustment")
+                        Text(
+                            text = "Auto-adjusts bitrate based on connection health (1-on-1 only)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = dynamicBitrateEnabled,
+                        onCheckedChange = { 
+                            dynamicBitrateEnabled = it
+                            prefs.edit().putBoolean("dynamic_bitrate_enabled", it).apply()
+                        },
+                        enabled = isHost
+                    )
+                }
+                
+                Spacer(modifier = Modifier.height(16.dp))
+
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -256,7 +283,8 @@ fun SettingsScreen(
                     ) {
                         Text("Opus Bitrate (Quality)")
                         val currentBitrateVal = bitrateOptions[currentBitrateIndex.roundToInt()]
-                        Text("${currentBitrateVal / 1000} kbps", color = MaterialTheme.colorScheme.primary)
+                        val label = if (currentBitrateVal < 1000) "$currentBitrateVal bps" else "${currentBitrateVal / 1000} kbps"
+                        Text(label, color = MaterialTheme.colorScheme.primary)
                     }
                     Slider(
                         value = currentBitrateIndex,
@@ -268,12 +296,13 @@ fun SettingsScreen(
                             val selectedBitrate = bitrateOptions[index]
                             prefs.edit().putInt("opus_bitrate", selectedBitrate).apply()
                         },
-                        valueRange = 0f..5f,
-                        steps = 4,
-                        enabled = isHost
+                        valueRange = 0f..7f,
+                        steps = 6,
+                        enabled = isHost && !dynamicBitrateEnabled
                     )
                     Text(
-                        text = "Snaps to: 8, 16, 32, 64, 128, or 256 kbps.",
+                        text = if (dynamicBitrateEnabled) "Managed automatically based on connection quality." 
+                               else "Snaps to: 2, 4, 8, 16, 32, 64, 128, or 256 kbps.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

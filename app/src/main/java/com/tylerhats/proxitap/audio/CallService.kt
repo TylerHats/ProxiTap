@@ -43,17 +43,20 @@ data class PeerQuality(
     val deviceName: String,
     val pingMs: Long?,
     val packetLossRate: Float?,
-    val isHost: Boolean
+    val isHost: Boolean,
+    val bitrateBps: Int? = null
 )
 
 class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListener {
 
     private val binder = LocalBinder()
     private var scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val myPeerId = UUID.randomUUID().toString()
+    @Volatile
+    private var myPeerId = UUID.randomUUID().toString()
     private var isEndingCall = false
     private val initDeferred = kotlinx.coroutines.CompletableDeferred<Unit>()
     private var callStartTime = 0L
+    private var currentDynamicBitrate = 64000
     
     // Core Dependencies
     lateinit var webRtcClient: WebRtcClient
@@ -123,6 +126,7 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
     private var remoteIcePort: Int? = null
     private var udpProxy: UdpProxy? = null
     private var directUdpStreamer: DirectUdpAudioStreamer? = null
+    @Volatile
     var isHostSignaling = false
         private set
     
@@ -288,6 +292,8 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         if (callStartTime == 0L) {
             callStartTime = System.currentTimeMillis()
         }
+        val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
+        currentDynamicBitrate = prefs.getInt("opus_bitrate", 64000)
 
         if (!isMediaLobby || isGroupVoice) {
             try {
@@ -476,41 +482,59 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                         if (!isMe) {
                             val ping = peerPings[p.id] // signaling ping
                             
-                            if (isMediaLobby && isBidirectional && !isGroupVoice) {
+                             if (isMediaLobby && isBidirectional && !isGroupVoice) {
                                 // Direct UDP Call
                                 val lossRate = directUdpStreamer?.lossTracker?.getLossRate()
+                                val appPrefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
                                 newQualities[p.id] = PeerQuality(
                                     peerId = p.id,
                                     deviceName = p.name,
                                     pingMs = ping,
                                     packetLossRate = lossRate,
-                                    isHost = p.isHost
+                                    isHost = p.isHost,
+                                    bitrateBps = appPrefs.getInt("opus_bitrate", 64000)
                                 )
                             } else if (!isMediaLobby) {
                                 // WebRTC Call
                                 webRtcClient.getPeerConnectionQuality(p.id) { rtt, loss ->
                                     val rttVal = rtt?.toLong() ?: ping
+                                    val servicePrefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
+                                    val currentBitrate = if (isHostSignaling && servicePrefs.getBoolean("dynamic_bitrate_enabled", true)) {
+                                        currentDynamicBitrate
+                                    } else {
+                                        webRtcClient.opusBitrateBps
+                                    }
                                     val q = PeerQuality(
                                         peerId = p.id,
                                         deviceName = p.name,
                                         pingMs = rttVal,
                                         packetLossRate = loss,
-                                        isHost = p.isHost
+                                        isHost = p.isHost,
+                                        bitrateBps = currentBitrate
                                     )
                                     synchronized(_peerQualities) {
                                         val currentMap = _peerQualities.value.toMutableMap()
                                         currentMap[p.id] = q
                                         _peerQualities.value = currentMap
                                     }
+                                    
+                                    if (isHostSignaling && !isGroupVoice && !isMediaLobby) {
+                                        if (servicePrefs.getBoolean("dynamic_bitrate_enabled", true)) {
+                                            val maxBitrate = servicePrefs.getInt("opus_bitrate", 64000)
+                                            adjustDynamicBitrate(rttVal, loss, maxBitrate)
+                                        }
+                                    }
                                 }
                             } else {
                                 // Media Broadcast
+                                val appPrefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
                                 newQualities[p.id] = PeerQuality(
                                     peerId = p.id,
                                     deviceName = p.name,
                                     pingMs = ping,
                                     packetLossRate = 0f,
-                                    isHost = p.isHost
+                                    isHost = p.isHost,
+                                    bitrateBps = appPrefs.getInt("opus_bitrate", 64000)
                                 )
                             }
                         }
@@ -537,6 +561,7 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                                     put("peerId", peerId)
                                     put("pingMs", q.pingMs ?: -1L)
                                     put("packetLossRate", q.packetLossRate?.toDouble() ?: -1.0)
+                                    put("bitrateBps", q.bitrateBps ?: -1)
                                 }
                                 array.put(item)
                             }
@@ -697,9 +722,16 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
     private fun broadcastSettings() {
         if (!isHostSignaling) return
         val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
+        val dynamicEnabled = prefs.getBoolean("dynamic_bitrate_enabled", true)
+        val finalBitrate = if (!isGroupVoice && !isMediaLobby && dynamicEnabled) {
+            currentDynamicBitrate
+        } else {
+            prefs.getInt("opus_bitrate", 64000)
+        }
+        
         val settingsMsg = JSONObject().apply {
             put("type", "SETTINGS")
-            put("opusBitrate", prefs.getInt("opus_bitrate", 64000))
+            put("opusBitrate", finalBitrate)
             put("opusDtx", prefs.getBoolean("opus_dtx", true))
             put("dtxThreshold", prefs.getFloat("dtx_threshold", 50f).toDouble())
             put("nsEnabled", prefs.getBoolean("ns_enabled", true))
@@ -711,9 +743,53 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         }
     }
 
+    private fun adjustDynamicBitrate(ping: Long?, loss: Float?, targetMaxBitrate: Int) {
+        val steps = listOf(2000, 4000, 8000, 16000, 32000, 64000, 128000, 256000)
+        var currentIndex = steps.indexOf(currentDynamicBitrate)
+        if (currentIndex == -1) {
+            currentIndex = steps.indexOf(64000)
+        }
+        
+        val newIndex = when {
+            ping == null || loss == null -> {
+                currentIndex
+            }
+            ping > 200 || loss > 8f -> {
+                // True extreme case - force minimum bitrate to maintain connection
+                0 // 2 kbps
+            }
+            ping > 120 || loss > 4f -> {
+                // Poor connection - decrease by 2 steps
+                (currentIndex - 2).coerceAtLeast(0)
+            }
+            ping > 70 || loss > 1.5f -> {
+                // Fair connection - decrease by 1 step
+                (currentIndex - 1).coerceAtLeast(0)
+            }
+            ping <= 40 && loss <= 0.5f -> {
+                // Excellent connection - increase by 1 step (up to targetMaxBitrate)
+                val targetIndex = steps.indexOf(targetMaxBitrate).coerceAtLeast(0)
+                (currentIndex + 1).coerceAtMost(targetIndex)
+            }
+            else -> {
+                currentIndex
+            }
+        }
+        
+        val newBitrate = steps[newIndex]
+        if (newBitrate != currentDynamicBitrate) {
+            currentDynamicBitrate = newBitrate
+            webRtcClient.opusBitrateBps = newBitrate
+            webRtcClient.applyAudioSettingsToActiveConnections()
+            Log.d("CallService", "Dynamic Quality Adjustment: Bitrate adjusted to ${newBitrate / 1000.0} kbps (Ping: ${ping}ms, Loss: ${loss}%)")
+            broadcastSettings()
+        }
+    }
+
     fun startHostSignaling(port: Int = 8080) {
         _isConnecting.value = false
         _isReconnecting.value = false
+        myPeerId = "HOST"
         scope.launch {
             initDeferred.await()
             if (signalingServer != null) {
@@ -965,13 +1041,15 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                         
                         val ping = obj.getLong("pingMs")
                         val loss = obj.getDouble("packetLossRate")
+                        val bRate = obj.optInt("bitrateBps", -1)
                         
                         newQualities[peerId] = PeerQuality(
                             peerId = peerId,
                             deviceName = deviceName,
                             pingMs = if (ping >= 0) ping else null,
                             packetLossRate = if (loss >= 0) loss.toFloat() else null,
-                            isHost = isHost
+                            isHost = isHost,
+                            bitrateBps = if (bRate >= 0) bRate else null
                         )
                     }
                     _peerQualities.value = newQualities
@@ -1116,6 +1194,7 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         _isReconnecting.value = false
         while (outgoingAudioChannel.tryReceive().isSuccess) { /* drain */ }
         callStartTime = 0L
+        myPeerId = UUID.randomUUID().toString()
         
         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         am.mode = AudioManager.MODE_NORMAL

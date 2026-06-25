@@ -488,6 +488,7 @@ fun ProxiTapApp() {
                     isReconnecting = isReconnecting,
                     isMediaLobby = isMediaLobby,
                     isGroupVoice = callService?.isGroupVoice ?: isGroupVoice,
+                    isBidirectional = callService?.isBidirectional ?: isBidirectional,
                     participants = participants,
                     rawParticipants = rawParticipants,
                     peerQualities = peerQualities,
