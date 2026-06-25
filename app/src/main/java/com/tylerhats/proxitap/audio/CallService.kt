@@ -312,7 +312,7 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             mediaStreamer = MediaStreamer(this)
             val useMono = !isMediaLobby || isGroupVoice
             val rate = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE).getInt("group_sample_rate", 16000)
-            val sampleRate = if (isGroupVoice) rate else 44100
+            val sampleRate = if (isGroupVoice) rate else 48000
             mediaStreamer?.startPlayback(isMono = useMono, sampleRate = sampleRate)
             
             if (isMediaLobby && !isGroupVoice && mediaResult != 0 && mediaData != null) {
@@ -750,16 +750,20 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         signalingClient?.connect(myPeerId, deviceName)
 
         var hasConnectedOnce = false
+        var connectedTimestamp = 0L
         scope.launch {
             signalingClient?.connectionState?.collect { state ->
                 when (state) {
                     com.tylerhats.proxitap.signaling.ConnectionState.CONNECTED -> {
-                        hasConnectedOnce = true
+                        connectedTimestamp = System.currentTimeMillis()
                         _isConnecting.value = false
                         _isReconnecting.value = false
                     }
                     com.tylerhats.proxitap.signaling.ConnectionState.CONNECTING,
                     com.tylerhats.proxitap.signaling.ConnectionState.DISCONNECTED -> {
+                        if (connectedTimestamp > 0L && (System.currentTimeMillis() - connectedTimestamp) > 4000L) {
+                            hasConnectedOnce = true
+                        }
                         if (hasConnectedOnce) {
                             _isConnecting.value = false
                             _isReconnecting.value = true

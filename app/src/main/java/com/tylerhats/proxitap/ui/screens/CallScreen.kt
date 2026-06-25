@@ -29,6 +29,7 @@ fun CallScreen(
     onMuteToggle: () -> Unit,
     onEndCallClick: () -> Unit,
     onSettingsClick: () -> Unit,
+    onWebPlayerClick: () -> Unit,
     onShowQrCodeClick: (() -> Unit)? = null
 ) {
     val infiniteTransition = rememberInfiniteTransition()
@@ -153,34 +154,46 @@ fun CallScreen(
         
         var showStats by remember { mutableStateOf(false) }
         
-        if (isHost && stats.isNotEmpty()) {
-            Spacer(modifier = Modifier.height(16.dp))
-            OutlinedButton(onClick = { showStats = !showStats }) {
-                Text(if (showStats) "Hide Diagnostics" else "View Diagnostics")
+        Spacer(modifier = Modifier.height(16.dp))
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (isHost && stats.isNotEmpty()) {
+                OutlinedButton(onClick = { showStats = !showStats }) {
+                    Text(if (showStats) "Hide Diagnostics" else "View Diagnostics")
+                }
             }
-            if (showStats) {
-                Spacer(modifier = Modifier.height(8.dp))
-                androidx.compose.foundation.lazy.LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f, fill = false)
-                        .background(MaterialTheme.colorScheme.surface, shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
-                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
-                        .padding(12.dp)
-                ) {
-                    items(stats.keys.toList().size) { index ->
-                        val key = stats.keys.toList()[index]
-                        val value = stats[key] ?: ""
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(key, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(value, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                        }
-                        if (index < stats.size - 1) {
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha=0.5f))
-                        }
+            Button(
+                onClick = onWebPlayerClick,
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Text("🌐 Web Player")
+            }
+        }
+        
+        if (isHost && stats.isNotEmpty() && showStats) {
+            Spacer(modifier = Modifier.height(8.dp))
+            androidx.compose.foundation.lazy.LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f, fill = false)
+                    .background(MaterialTheme.colorScheme.surface, shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                    .padding(12.dp)
+            ) {
+                items(stats.keys.toList().size) { index ->
+                    val key = stats.keys.toList()[index]
+                    val value = stats[key] ?: ""
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(key, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(value, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    }
+                    if (index < stats.size - 1) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha=0.5f))
                     }
                 }
             }

@@ -24,7 +24,7 @@ class MediaStreamer(private val context: Context) {
     private val scope = CoroutineScope(Dispatchers.IO + Job())
     private var isStreaming = false
     
-    private val SAMPLE_RATE = 44100
+    private val SAMPLE_RATE = 48000
     private val CHANNEL_CONFIG_IN_MEDIA = AudioFormat.CHANNEL_IN_STEREO
     private val CHANNEL_CONFIG_IN_MIC = AudioFormat.CHANNEL_IN_MONO
     private val CHANNEL_CONFIG_OUT = AudioFormat.CHANNEL_OUT_STEREO
@@ -65,6 +65,7 @@ class MediaStreamer(private val context: Context) {
         record.startRecording()
 
         scope.launch {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO)
             // Send in smaller chunks (20ms frames) for low latency
             val frameSize = (SAMPLE_RATE * 2 * 2 * 0.02).toInt() // 20ms Stereo PCM 16-bit
             val buffer = ByteArray(frameSize)
@@ -119,6 +120,7 @@ class MediaStreamer(private val context: Context) {
         record.startRecording()
 
         scope.launch {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO)
             // Send in smaller chunks (20ms frames) for low latency
             val frameSize = (sampleRate * 1 * 2 * 0.02).toInt() // 20ms Mono PCM 16-bit
             val buffer = ByteArray(frameSize)
@@ -170,7 +172,7 @@ class MediaStreamer(private val context: Context) {
         return rms < threshold
     }
 
-    fun startPlayback(isMono: Boolean = false, sampleRate: Int = 44100) {
+    fun startPlayback(isMono: Boolean = false, sampleRate: Int = 48000) {
         val format = AudioFormat.Builder()
             .setEncoding(AUDIO_FORMAT)
             .setSampleRate(sampleRate)
@@ -178,8 +180,8 @@ class MediaStreamer(private val context: Context) {
             .build()
 
         val attributesBuilder = AudioAttributes.Builder()
-            .setUsage(if (isMono) AudioAttributes.USAGE_VOICE_COMMUNICATION else AudioAttributes.USAGE_MEDIA)
-            .setContentType(if (isMono) AudioAttributes.CONTENT_TYPE_SPEECH else AudioAttributes.CONTENT_TYPE_MUSIC)
+            .setUsage(if (isMono) AudioAttributes.USAGE_VOICE_COMMUNICATION else AudioAttributes.USAGE_GAME)
+            .setContentType(if (isMono) AudioAttributes.CONTENT_TYPE_SPEECH else AudioAttributes.CONTENT_TYPE_SONIFICATION)
             
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             attributesBuilder.setAllowedCapturePolicy(AudioAttributes.ALLOW_CAPTURE_BY_NONE)
@@ -199,6 +201,17 @@ class MediaStreamer(private val context: Context) {
         }
         
         val track = trackBuilder.build()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val frameSizeInBytes = (if (isMono) 1 else 2) * 2
+            val chunkInFrames = (sampleRate * 0.02).toInt()
+            val targetBufferSizeInFrames = chunkInFrames * 2
+            try {
+                val actualBufferSize = track.setBufferSizeInFrames(targetBufferSizeInFrames)
+                Log.d("MediaStreamer", "Requested buffer size: $targetBufferSizeInFrames frames, set to: $actualBufferSize frames")
+            } catch (e: Exception) {
+                Log.e("MediaStreamer", "Failed to set buffer size in frames", e)
+            }
+        }
         audioTrack = track
         track.play()
     }

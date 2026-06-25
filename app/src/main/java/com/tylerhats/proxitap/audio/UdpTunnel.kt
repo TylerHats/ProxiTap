@@ -77,6 +77,7 @@ class DirectUdpAudioStreamer(
         if (isRunning) return
         isRunning = true
         scope.launch {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO)
             try {
                 val host = remoteIp.replace("[", "").replace("]", "")
                 val remoteAddress = java.net.InetAddress.getByName(host)
