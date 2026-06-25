@@ -12,9 +12,10 @@ import android.media.projection.MediaProjection
 import android.os.Build
 import android.util.Log
 import kotlinx.coroutines.*
-import java.nio.ByteBuffer
 
 class MediaStreamer(private val context: Context) {
+
+    private val prefs = context.getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
 
     private var mediaProjection: MediaProjection? = null
     private var audioRecord: AudioRecord? = null
@@ -29,9 +30,6 @@ class MediaStreamer(private val context: Context) {
     private val CHANNEL_CONFIG_OUT = AudioFormat.CHANNEL_OUT_STEREO
     private val CHANNEL_CONFIG_OUT_MONO = AudioFormat.CHANNEL_OUT_MONO
     private val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
-    
-    private val bufferSizeMedia = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG_IN_MEDIA, AUDIO_FORMAT) * 2
-    private val bufferSizeMic = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG_IN_MIC, AUDIO_FORMAT) * 2
 
     @SuppressLint("MissingPermission")
     fun startCapture(projection: MediaProjection, onAudioDataReceived: (ByteArray) -> Unit) {
@@ -53,20 +51,25 @@ class MediaStreamer(private val context: Context) {
             .setSampleRate(SAMPLE_RATE)
             .setChannelMask(CHANNEL_CONFIG_IN_MEDIA)
             .build()
+            
+        val minBufSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG_IN_MEDIA, AUDIO_FORMAT)
 
-        audioRecord = AudioRecord.Builder()
+        val recordBuilder = AudioRecord.Builder()
             .setAudioFormat(format)
-            .setBufferSizeInBytes(bufferSizeMedia)
+            .setBufferSizeInBytes(minBufSize)
             .setAudioPlaybackCaptureConfig(config)
-            .build()
 
+        val record = recordBuilder.build()
+        audioRecord = record
         isStreaming = true
-        audioRecord?.startRecording()
+        record.startRecording()
 
         scope.launch {
-            val buffer = ByteArray(bufferSizeMedia)
+            // Send in smaller chunks (20ms frames) for low latency
+            val frameSize = (SAMPLE_RATE * 2 * 2 * 0.02).toInt() // 20ms Stereo PCM 16-bit
+            val buffer = ByteArray(frameSize)
             while (isActive && isStreaming) {
-                val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
+                val read = record.read(buffer, 0, buffer.size) ?: 0
                 if (read > 0) {
                     val data = buffer.copyOf(read)
                     onAudioDataReceived(data)
@@ -76,56 +79,128 @@ class MediaStreamer(private val context: Context) {
     }
 
     @SuppressLint("MissingPermission")
-    fun startMicrophoneCapture(onAudioDataReceived: (ByteArray) -> Unit) {
+    fun startMicrophoneCapture(sampleRate: Int, onAudioDataReceived: (ByteArray) -> Unit) {
         val format = AudioFormat.Builder()
             .setEncoding(AUDIO_FORMAT)
-            .setSampleRate(SAMPLE_RATE)
+            .setSampleRate(sampleRate)
             .setChannelMask(CHANNEL_CONFIG_IN_MIC)
             .build()
+            
+        val minBufSize = AudioRecord.getMinBufferSize(sampleRate, CHANNEL_CONFIG_IN_MIC, AUDIO_FORMAT)
 
-        audioRecord = AudioRecord.Builder()
+        val recordBuilder = AudioRecord.Builder()
             .setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
             .setAudioFormat(format)
-            .setBufferSizeInBytes(bufferSizeMic)
-            .build()
+            .setBufferSizeInBytes(minBufSize)
+
+        val record = recordBuilder.build()
+        audioRecord = record
+
+        // Apply NS and AEC if enabled in settings
+        val nsEnabled = prefs.getBoolean("ns_enabled", true)
+        val aecEnabled = prefs.getBoolean("aec_enabled", true)
+        var ns: android.media.audiofx.NoiseSuppressor? = null
+        var aec: android.media.audiofx.AcousticEchoCanceler? = null
+
+        if (nsEnabled && android.media.audiofx.NoiseSuppressor.isAvailable()) {
+            try {
+                ns = android.media.audiofx.NoiseSuppressor.create(record.audioSessionId)
+                ns?.enabled = true
+            } catch (e: Exception) { Log.e("MediaStreamer", "Failed to enable NoiseSuppressor", e) }
+        }
+        if (aecEnabled && android.media.audiofx.AcousticEchoCanceler.isAvailable()) {
+            try {
+                aec = android.media.audiofx.AcousticEchoCanceler.create(record.audioSessionId)
+                aec?.enabled = true
+            } catch (e: Exception) { Log.e("MediaStreamer", "Failed to enable AcousticEchoCanceler", e) }
+        }
 
         isStreaming = true
-        audioRecord?.startRecording()
+        record.startRecording()
 
         scope.launch {
-            val buffer = ByteArray(bufferSizeMic)
+            // Send in smaller chunks (20ms frames) for low latency
+            val frameSize = (sampleRate * 1 * 2 * 0.02).toInt() // 20ms Mono PCM 16-bit
+            val buffer = ByteArray(frameSize)
+            val dtxEnabled = prefs.getBoolean("opus_dtx", true)
+            var hangoverFrames = 0
+            val maxHangover = 30 // 30 frames * 20ms = 600ms hangover window
+            
             while (isActive && isStreaming) {
-                val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
+                val read = record.read(buffer, 0, buffer.size) ?: 0
                 if (read > 0) {
                     val data = buffer.copyOf(read)
-                    onAudioDataReceived(data)
+                    if (dtxEnabled) {
+                        val thresh = prefs.getFloat("dtx_threshold", 50f)
+                        val silent = isSilence(data, thresh)
+                        if (silent) {
+                            if (hangoverFrames > 0) {
+                                hangoverFrames--
+                                onAudioDataReceived(data)
+                            } else {
+                                continue
+                            }
+                        } else {
+                            hangoverFrames = maxHangover
+                            onAudioDataReceived(data)
+                        }
+                    } else {
+                        onAudioDataReceived(data)
+                    }
                 }
             }
+            
+            try { ns?.release() } catch (e: Exception) {}
+            try { aec?.release() } catch (e: Exception) {}
         }
     }
 
-    fun startPlayback(isMono: Boolean = false) {
+    private fun isSilence(data: ByteArray, threshold: Float): Boolean {
+        var sum = 0.0
+        val numSamples = data.size / 2
+        if (numSamples == 0) return true
+        for (i in 0 until data.size step 2) {
+            if (i + 1 < data.size) {
+                // Correct little-endian 16-bit PCM parsing with sign extension prevention
+                val sample = (((data[i+1].toInt() and 0xFF) shl 8) or (data[i].toInt() and 0xFF)).toShort()
+                sum += sample * sample
+            }
+        }
+        val rms = Math.sqrt(sum / numSamples)
+        return rms < threshold
+    }
+
+    fun startPlayback(isMono: Boolean = false, sampleRate: Int = 44100) {
         val format = AudioFormat.Builder()
             .setEncoding(AUDIO_FORMAT)
-            .setSampleRate(SAMPLE_RATE)
+            .setSampleRate(sampleRate)
             .setChannelMask(if (isMono) CHANNEL_CONFIG_OUT_MONO else CHANNEL_CONFIG_OUT)
             .build()
 
-        val attributes = AudioAttributes.Builder()
+        val attributesBuilder = AudioAttributes.Builder()
             .setUsage(if (isMono) AudioAttributes.USAGE_VOICE_COMMUNICATION else AudioAttributes.USAGE_MEDIA)
             .setContentType(if (isMono) AudioAttributes.CONTENT_TYPE_SPEECH else AudioAttributes.CONTENT_TYPE_MUSIC)
-            .build()
             
-        val bufferSizeOut = if (isMono) bufferSizeMic else bufferSizeMedia
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            attributesBuilder.setAllowedCapturePolicy(AudioAttributes.ALLOW_CAPTURE_BY_NONE)
+        }
+        val attributes = attributesBuilder.build()
+            
+        val minBufSize = AudioTrack.getMinBufferSize(sampleRate, if (isMono) CHANNEL_CONFIG_OUT_MONO else CHANNEL_CONFIG_OUT, AUDIO_FORMAT)
 
-        audioTrack = AudioTrack.Builder()
+        val trackBuilder = AudioTrack.Builder()
             .setAudioAttributes(attributes)
             .setAudioFormat(format)
-            .setBufferSizeInBytes(bufferSizeOut)
+            .setBufferSizeInBytes(minBufSize)
             .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
-
-        audioTrack?.play()
+            
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            trackBuilder.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+        }
+        
+        val track = trackBuilder.build()
+        audioTrack = track
+        track.play()
     }
 
     fun playAudioData(data: ByteArray) {
@@ -134,17 +209,27 @@ class MediaStreamer(private val context: Context) {
 
     fun stop() {
         isStreaming = false
-        scope.coroutineContext.cancelChildren()
+        try { scope.cancel() } catch (e: Exception) {}
         
-        audioRecord?.stop()
-        audioRecord?.release()
+        try {
+            audioRecord?.stop()
+        } catch (e: Exception) { Log.e("MediaStreamer", "Error stopping audioRecord", e) }
+        try {
+            audioRecord?.release()
+        } catch (e: Exception) { Log.e("MediaStreamer", "Error releasing audioRecord", e) }
         audioRecord = null
         
-        audioTrack?.stop()
-        audioTrack?.release()
+        try {
+            audioTrack?.stop()
+        } catch (e: Exception) { Log.e("MediaStreamer", "Error stopping audioTrack", e) }
+        try {
+            audioTrack?.release()
+        } catch (e: Exception) { Log.e("MediaStreamer", "Error releasing audioTrack", e) }
         audioTrack = null
         
-        mediaProjection?.stop()
+        try {
+            mediaProjection?.stop()
+        } catch (e: Exception) { Log.e("MediaStreamer", "Error stopping mediaProjection", e) }
         mediaProjection = null
     }
 }

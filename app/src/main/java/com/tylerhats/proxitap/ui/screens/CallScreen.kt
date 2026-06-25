@@ -21,8 +21,10 @@ fun CallScreen(
     isMuted: Boolean,
     isSpeaking: Boolean = false,
     distanceMeters: Float? = null,
+    isConnecting: Boolean = false,
     isReconnecting: Boolean = false,
     isMediaLobby: Boolean = false,
+    isGroupVoice: Boolean = false,
     participants: List<String> = emptyList(),
     stats: Map<String, String> = emptyMap(),
     onMuteToggle: () -> Unit,
@@ -33,7 +35,7 @@ fun CallScreen(
     val infiniteTransition = rememberInfiniteTransition()
     val ringScale by infiniteTransition.animateFloat(
         initialValue = 1f,
-        targetValue = if (isSpeaking && !isReconnecting) 1.2f else 1f,
+        targetValue = if (isSpeaking && !isReconnecting && !isConnecting) 1.2f else 1f,
         animationSpec = infiniteRepeatable(
             animation = tween(1000, easing = LinearEasing),
             repeatMode = RepeatMode.Reverse
@@ -41,7 +43,7 @@ fun CallScreen(
     )
     val ringAlpha by infiniteTransition.animateFloat(
         initialValue = 0.5f,
-        targetValue = if (isSpeaking && !isReconnecting) 0f else 0.5f,
+        targetValue = if (isSpeaking && !isReconnecting && !isConnecting) 0f else 0.5f,
         animationSpec = infiniteRepeatable(
             animation = tween(1000, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
@@ -82,7 +84,7 @@ fun CallScreen(
             contentAlignment = Alignment.Center,
             modifier = Modifier.size(200.dp)
         ) {
-            if (isSpeaking && !isReconnecting) {
+            if (isSpeaking && !isReconnecting && !isConnecting) {
                 Box(
                     modifier = Modifier
                         .size(160.dp)
@@ -95,12 +97,12 @@ fun CallScreen(
                 modifier = Modifier
                     .size(160.dp)
                     .clip(CircleShape)
-                    .background(if (isReconnecting) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.primaryContainer),
+                    .background(if (isReconnecting || isConnecting) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.primaryContainer),
                 contentAlignment = Alignment.Center
             ) {
-                if (isReconnecting) {
+                if (isReconnecting || isConnecting) {
                     CircularProgressIndicator(color = MaterialTheme.colorScheme.onSurfaceVariant)
-                } else if (isMediaLobby) {
+                } else if (isMediaLobby && !isGroupVoice) {
                     Text(
                         text = "MEDIA", 
                         style = MaterialTheme.typography.displayMedium,
@@ -118,12 +120,16 @@ fun CallScreen(
         
         Spacer(modifier = Modifier.height(32.dp))
         Text(
-            text = if (isReconnecting) "Reconnecting..." else if (isMediaLobby) "Media Broadcasting Active" else "Voice Active", 
+            text = if (isConnecting) "Connecting..."
+                   else if (isReconnecting) "Reconnecting..." 
+                   else if (isGroupVoice) "Group Voice Active" 
+                   else if (isMediaLobby) "Media Broadcasting Active" 
+                   else "Voice Active", 
             style = MaterialTheme.typography.bodyLarge,
-            color = if (isReconnecting) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.secondary
+            color = if (isReconnecting || isConnecting) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.secondary
         )
 
-        if (distanceMeters != null && !isReconnecting && participants.size <= 2) {
+        if (distanceMeters != null && !isReconnecting && !isConnecting && participants.size <= 2) {
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 text = "Distance: %.1fm".format(distanceMeters),

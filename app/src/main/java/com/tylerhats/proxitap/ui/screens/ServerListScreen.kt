@@ -85,8 +85,12 @@ fun ServerListScreen(
                                     style = MaterialTheme.typography.titleMedium
                                 )
                                 if (lobby.isMedia) {
+                                    val parts = lobby.payload.split("|")
+                                    val isGroup = if (parts.size >= 7) parts[6] == "1" else false
                                     Text(
-                                        text = if (lobby.isBidi) "Media (Bidirectional)" else "Media (Broadcast)",
+                                        text = if (isGroup) "Group Voice Call"
+                                               else if (lobby.isBidi) "Media (Bidirectional)"
+                                               else "Media (Broadcast)",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.primary
                                     )

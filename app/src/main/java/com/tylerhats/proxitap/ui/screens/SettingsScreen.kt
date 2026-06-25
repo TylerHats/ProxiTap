@@ -3,6 +3,8 @@ package com.tylerhats.proxitap.ui.screens
 import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -36,8 +38,16 @@ fun SettingsScreen(
         mutableStateOf(if (idx != -1) idx.toFloat() else 3f)
     }
     
+    val sampleRateOptions = remember { listOf(8000, 16000, 32000, 44100) }
+    var currentSampleRateIndex by remember {
+        val currentRate = prefs.getInt("group_sample_rate", 16000)
+        val idx = sampleRateOptions.indexOf(currentRate)
+        mutableStateOf(if (idx != -1) idx.toFloat() else 1f)
+    }
+    
     var maxParticipants by remember { mutableStateOf(prefs.getInt("max_participants", 4)) }
     var opusDtx by remember { mutableStateOf(prefs.getBoolean("opus_dtx", true)) }
+    var dtxThreshold by remember { mutableStateOf(prefs.getFloat("dtx_threshold", 50f)) }
     var displayName by remember { mutableStateOf(prefs.getString("display_name", android.os.Build.MODEL) ?: android.os.Build.MODEL) }
 
     DisposableEffect(prefs) {
@@ -47,11 +57,19 @@ fun SettingsScreen(
                 "aec_enabled" -> aecEnabled = prefs.getBoolean(key, true)
                 "bluetooth_mic" -> bluetoothMic = prefs.getBoolean(key, true)
                 "opus_dtx" -> opusDtx = prefs.getBoolean(key, true)
+                "dtx_threshold" -> dtxThreshold = prefs.getFloat(key, 50f)
                 "opus_bitrate" -> {
                     val bitrateVal = prefs.getInt(key, 64000)
                     val idx = bitrateOptions.indexOf(bitrateVal)
                     if (idx != -1) {
                         currentBitrateIndex = idx.toFloat()
+                    }
+                }
+                "group_sample_rate" -> {
+                    val rateVal = prefs.getInt(key, 16000)
+                    val idx = sampleRateOptions.indexOf(rateVal)
+                    if (idx != -1) {
+                        currentSampleRateIndex = idx.toFloat()
                     }
                 }
                 "max_participants" -> maxParticipants = prefs.getInt(key, 4)
@@ -66,7 +84,11 @@ fun SettingsScreen(
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().systemBarsPadding().padding(16.dp)
+        modifier = Modifier
+            .fillMaxSize()
+            .systemBarsPadding()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState())
     ) {
         Text("Profile & Settings", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(24.dp))
@@ -99,9 +121,10 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
+            Spacer(modifier = Modifier.height(16.dp))
         }
 
-        if (!isMediaLobby) {
+        if (!isMediaLobby || isGroupVoice) {
             Text("Audio Settings", style = MaterialTheme.typography.titleMedium)
             Spacer(modifier = Modifier.height(16.dp))
         
@@ -137,27 +160,29 @@ fun SettingsScreen(
                 )
             }
             
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Text("Bluetooth Mic vs Music Quality")
-                    Text(
-                        text = if (bluetoothMic) "Using Earbud Mic (Drops music quality)" else "Using Phone Mic (High music quality)",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+            if (!isGroupVoice) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text("Bluetooth Mic vs Music Quality")
+                        Text(
+                            text = if (bluetoothMic) "Using Earbud Mic (Drops music quality)" else "Using Phone Mic (High music quality)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = bluetoothMic,
+                        onCheckedChange = { 
+                            bluetoothMic = it
+                            prefs.edit().putBoolean("bluetooth_mic", it).apply()
+                        },
+                        enabled = isHost
                     )
                 }
-                Switch(
-                    checked = bluetoothMic,
-                    onCheckedChange = { 
-                        bluetoothMic = it
-                        prefs.edit().putBoolean("bluetooth_mic", it).apply()
-                    },
-                    enabled = isHost
-                )
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -168,7 +193,7 @@ fun SettingsScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text("Opus DTX (Bandwidth Saver)")
+                    Text(if (isGroupVoice) "Silence Gate (DTX)" else "Opus DTX (Bandwidth Saver)")
                     Text(
                         text = "Halts transmission during silence",
                         style = MaterialTheme.typography.bodySmall,
@@ -185,42 +210,115 @@ fun SettingsScreen(
                 )
             }
             
+            if (isGroupVoice && opusDtx) {
+                Spacer(modifier = Modifier.height(16.dp))
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Silence Gate Threshold")
+                        val label = when {
+                            dtxThreshold < 30f -> "Very Sensitive (${dtxThreshold.roundToInt()})"
+                            dtxThreshold < 80f -> "Normal (${dtxThreshold.roundToInt()})"
+                            dtxThreshold < 150f -> "Firm (${dtxThreshold.roundToInt()})"
+                            else -> "Strict (${dtxThreshold.roundToInt()})"
+                        }
+                        Text(label, color = MaterialTheme.colorScheme.primary)
+                    }
+                    Slider(
+                        value = dtxThreshold,
+                        onValueChange = { 
+                            dtxThreshold = it
+                        },
+                        onValueChangeFinished = {
+                            prefs.edit().putFloat("dtx_threshold", dtxThreshold).apply()
+                        },
+                        valueRange = 10f..250f,
+                        enabled = isHost
+                    )
+                    Text(
+                        text = "Adjust to prevent your audio from cutting out or stuttering while speaking.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            
             Spacer(modifier = Modifier.height(16.dp))
             
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text("Opus Bitrate (Quality)")
-                    val currentBitrateVal = bitrateOptions[currentBitrateIndex.roundToInt()]
-                    Text("${currentBitrateVal / 1000} kbps", color = MaterialTheme.colorScheme.primary)
+            if (!isGroupVoice) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Opus Bitrate (Quality)")
+                        val currentBitrateVal = bitrateOptions[currentBitrateIndex.roundToInt()]
+                        Text("${currentBitrateVal / 1000} kbps", color = MaterialTheme.colorScheme.primary)
+                    }
+                    Slider(
+                        value = currentBitrateIndex,
+                        onValueChange = { 
+                            currentBitrateIndex = it
+                        },
+                        onValueChangeFinished = {
+                            val index = currentBitrateIndex.roundToInt()
+                            val selectedBitrate = bitrateOptions[index]
+                            prefs.edit().putInt("opus_bitrate", selectedBitrate).apply()
+                        },
+                        valueRange = 0f..5f,
+                        steps = 4,
+                        enabled = isHost
+                    )
+                    Text(
+                        text = "Snaps to: 8, 16, 32, 64, 128, or 256 kbps.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
-                Slider(
-                    value = currentBitrateIndex,
-                    onValueChange = { 
-                        currentBitrateIndex = it
-                        val index = it.roundToInt()
-                        val selectedBitrate = bitrateOptions[index]
-                        prefs.edit().putInt("opus_bitrate", selectedBitrate).apply()
-                    },
-                    valueRange = 0f..5f,
-                    steps = 4,
-                    enabled = isHost
-                )
-                Text(
-                    text = "Snaps to: 8, 16, 32, 64, 128, or 256 kbps.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            } else {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Group Audio Quality")
+                        val currentRateVal = sampleRateOptions[currentSampleRateIndex.roundToInt()]
+                        val rateLabel = when (currentRateVal) {
+                            8000 -> "Low (8 kHz)"
+                            16000 -> "Medium (16 kHz)"
+                            32000 -> "High (32 kHz)"
+                            44100 -> "Ultra (44.1 kHz)"
+                            else -> "$currentRateVal Hz"
+                        }
+                        Text(rateLabel, color = MaterialTheme.colorScheme.primary)
+                    }
+                    Slider(
+                        value = currentSampleRateIndex,
+                        onValueChange = { 
+                            currentSampleRateIndex = it
+                        },
+                        onValueChangeFinished = {
+                            val index = currentSampleRateIndex.roundToInt()
+                            val selectedRate = sampleRateOptions[index]
+                            prefs.edit().putInt("group_sample_rate", selectedRate).apply()
+                        },
+                        valueRange = 0f..3f,
+                        steps = 2,
+                        enabled = isHost
+                    )
+                    Text(
+                        text = "Lower rates use significantly less bandwidth and improve range.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
             
             Spacer(modifier = Modifier.height(16.dp))
         }
 
-        // Show Max Participants for multi-peer modes (isMediaLobby is true),
-        // or show as read-only/disabled locked to 2 for Direct Voice (!isMediaLobby)
-        Spacer(modifier = Modifier.height(16.dp))
         if (isMediaLobby) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Row(
@@ -235,7 +333,9 @@ fun SettingsScreen(
                     onValueChange = { 
                         val maxVal = it.roundToInt()
                         maxParticipants = maxVal
-                        prefs.edit().putInt("max_participants", maxVal).apply()
+                    },
+                    onValueChangeFinished = {
+                        prefs.edit().putInt("max_participants", maxParticipants).apply()
                     },
                     valueRange = 2f..8f,
                     steps = 5,
@@ -248,7 +348,6 @@ fun SettingsScreen(
                 )
             }
         } else {
-            // Direct Voice (strictly 2 participants)
             Column(modifier = Modifier.fillMaxWidth()) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -265,8 +364,6 @@ fun SettingsScreen(
             }
         }
 
-        // Show Experimental PTT Features only for Voice Modes (Direct Voice and Group Voice)
-        // Bypassed for Media Sharing (isMediaLobby = true && !isGroupVoice)
         if (!isMediaLobby || isGroupVoice) {
             Spacer(modifier = Modifier.height(24.dp))
             Text("Experimental Features", style = MaterialTheme.typography.titleMedium)
@@ -351,7 +448,7 @@ fun SettingsScreen(
             }
         }
         
-        Spacer(modifier = Modifier.weight(1f))
+        Spacer(modifier = Modifier.height(32.dp))
         
         Button(
             onClick = onBackClick,

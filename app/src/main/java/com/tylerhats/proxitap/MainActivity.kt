@@ -340,8 +340,11 @@ fun ProxiTapApp() {
             val isDeepLinkJoin = service != null
             if (isDeepLinkJoin) isHost = false
 
-            var isReconnecting by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(isDeepLinkJoin) }
+            var isJoiningLobby by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(isDeepLinkJoin) }
             val hasJoined by (callService?.hasJoined ?: kotlinx.coroutines.flow.MutableStateFlow(false)).collectAsState()
+            
+            val isConnecting by (callService?.isConnecting ?: kotlinx.coroutines.flow.MutableStateFlow(isDeepLinkJoin)).collectAsState()
+            val isReconnecting by (callService?.isReconnecting ?: kotlinx.coroutines.flow.MutableStateFlow(false)).collectAsState()
             
             var showPeerMediaProjectionPrompt by remember { 
                 mutableStateOf(isDeepLinkJoin && isMediaLobby && isBidirectional && !isGroupVoice && captureIntentData == null) 
@@ -371,7 +374,7 @@ fun ProxiTapApp() {
                                 } else {
                                     context.startService(intent)
                                 }
-                                isReconnecting = false
+                                isJoiningLobby = false
                             } else {
                                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                                     android.widget.Toast.makeText(context, "Failed to connect. Incorrect PIN or Host unavailable.", android.widget.Toast.LENGTH_LONG).show()
@@ -391,8 +394,8 @@ fun ProxiTapApp() {
                 }
             }
 
-            LaunchedEffect(isReconnecting, callService, hasJoined) {
-                if (!isReconnecting && !isHost && callService != null && !hasJoined) {
+            LaunchedEffect(isJoiningLobby, callService, hasJoined) {
+                if (!isJoiningLobby && !isHost && callService != null && !hasJoined) {
                     val hostIp = getNetworkManager(mode)?.getLocalIpAddress()
                     if (hostIp != null) {
                         callService?.setHasJoined(true)
@@ -419,6 +422,16 @@ fun ProxiTapApp() {
             val currentDistanceMeters = peerDistances.values.firstOrNull()
 
             DisposableEffect(context) {
+                val activity = context as? android.app.Activity
+                if (activity != null) {
+                    val isVoiceStream = !isMediaLobby || isGroupVoice
+                    activity.volumeControlStream = if (isVoiceStream) {
+                        android.media.AudioManager.STREAM_VOICE_CALL
+                    } else {
+                        android.media.AudioManager.STREAM_MUSIC
+                    }
+                }
+                
                 val receiver = object : android.content.BroadcastReceiver() {
                     override fun onReceive(c: android.content.Context?, intent: android.content.Intent?) {
                         if (intent?.action == "com.tylerhats.proxitap.CALL_ENDED") {
@@ -434,6 +447,7 @@ fun ProxiTapApp() {
                 }
                 onDispose {
                     context.unregisterReceiver(receiver)
+                    activity?.volumeControlStream = android.media.AudioManager.USE_DEFAULT_STREAM_TYPE
                 }
             }
 
@@ -484,8 +498,10 @@ fun ProxiTapApp() {
                     isMuted = isMuted,
                     isSpeaking = isSpeaking,
                     distanceMeters = currentDistanceMeters,
+                    isConnecting = isConnecting,
                     isReconnecting = isReconnecting,
                     isMediaLobby = isMediaLobby,
+                    isGroupVoice = callService?.isGroupVoice ?: isGroupVoice,
                     participants = participants,
                     stats = stats,
                     onMuteToggle = { callService?.toggleMute() },

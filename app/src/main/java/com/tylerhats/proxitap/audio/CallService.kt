@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import java.util.UUID
 import android.content.SharedPreferences
@@ -77,6 +78,12 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
     private val _hasJoined = MutableStateFlow(false)
     val hasJoined: StateFlow<Boolean> = _hasJoined
     
+    private val _isConnecting = MutableStateFlow(true)
+    val isConnecting: StateFlow<Boolean> = _isConnecting
+
+    private val _isReconnecting = MutableStateFlow(false)
+    val isReconnecting: StateFlow<Boolean> = _isReconnecting
+
     fun setHasJoined(joined: Boolean) {
         _hasJoined.value = joined
     }
@@ -93,6 +100,11 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
     var isGroupVoice = false
         private set
     private var mediaStreamer: MediaStreamer? = null
+    private val mediaStreamerMutex = kotlinx.coroutines.sync.Mutex()
+    private val outgoingAudioChannel = kotlinx.coroutines.channels.Channel<ByteArray>(
+        capacity = 15,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST
+    )
     
     private var myIcePort: Int? = null
     private var remoteIcePort: Int? = null
@@ -271,11 +283,18 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             callStartTime = System.currentTimeMillis()
         }
 
+        if (!isMediaLobby || isGroupVoice) {
+            try {
+                val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            } catch (e: Exception) {
+                Log.e("CallService", "Error setting audio mode to MODE_IN_COMMUNICATION", e)
+            }
+        }
+
         if (!isMediaLobby) {
             try {
                 if (!webRtcClient.hasWebRtcInitialized()) {
-                    val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                    audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
                     webRtcClient.initWebRtcAndTracks()
                 }
             } catch (e: Exception) {
@@ -283,34 +302,45 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             }
         }
         
+        // Launch host broadcast loop
+        scope.launch {
+            for (audioData in outgoingAudioChannel) {
+                if (isHostSignaling) {
+                    try {
+                        signalingServer?.broadcastAudioData(audioData)
+                    } catch (e: Exception) {
+                        Log.e("CallService", "Error broadcasting audio data", e)
+                    }
+                }
+            }
+        }
+
         if (mediaStreamer == null) {
             mediaStreamer = MediaStreamer(this)
             val useMono = !isMediaLobby || isGroupVoice
-            mediaStreamer?.startPlayback(isMono = useMono)
+            val rate = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE).getInt("group_sample_rate", 16000)
+            val sampleRate = if (isGroupVoice) rate else 44100
+            mediaStreamer?.startPlayback(isMono = useMono, sampleRate = sampleRate)
             
             if (isMediaLobby && !isGroupVoice && mediaResult != 0 && mediaData != null) {
                 val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
                 val projection = mediaProjectionManager.getMediaProjection(mediaResult, mediaData)
                 if (projection != null) {
                     mediaStreamer?.startCapture(projection) { audioData ->
-                        scope.launch {
-                            if (signalingServer != null) {
-                                signalingServer?.broadcastAudioData(audioData)
-                            } else if (signalingClient != null) {
-                                signalingClient?.sendAudioData(audioData)
-                            }
+                        if (isHostSignaling) {
+                            outgoingAudioChannel.trySend(audioData)
+                        } else {
+                            signalingClient?.sendAudioData(audioData)
                         }
                     }
                 }
             } else if (isMediaLobby && isGroupVoice) {
-                mediaStreamer?.startMicrophoneCapture { audioData ->
+                mediaStreamer?.startMicrophoneCapture(sampleRate = sampleRate) { audioData ->
                     if (!_isMuted.value) {
-                        scope.launch {
-                            if (signalingServer != null) {
-                                signalingServer?.broadcastAudioData(audioData)
-                            } else if (signalingClient != null) {
-                                signalingClient?.sendAudioData(audioData)
-                            }
+                        if (isHostSignaling) {
+                            outgoingAudioChannel.trySend(audioData)
+                        } else {
+                            signalingClient?.sendAudioData(audioData)
                         }
                     }
                 }
@@ -444,6 +474,7 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                     webRtcClient.updateAudioConstraints(enabled, webRtcClient.isAcousticEchoCancellationEnabled)
                 }
                 if (isHostSignaling) broadcastSettings()
+                if (isGroupVoice) restartMediaStreamerForGroupVoice()
             }
             "aec_enabled" -> {
                 val enabled = sharedPreferences.getBoolean(key, true)
@@ -452,6 +483,7 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                     webRtcClient.updateAudioConstraints(webRtcClient.isNoiseSuppressionEnabled, enabled)
                 }
                 if (isHostSignaling) broadcastSettings()
+                if (isGroupVoice) restartMediaStreamerForGroupVoice()
             }
             "hardware_ptt" -> {
                 hardwarePttManager?.isHardwarePttEnabled = sharedPreferences.getBoolean(key, false)
@@ -476,6 +508,14 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                 }
                 if (isHostSignaling) broadcastSettings()
             }
+            "dtx_threshold" -> {
+                if (isHostSignaling) broadcastSettings()
+            }
+            "group_sample_rate" -> {
+                val rate = sharedPreferences.getInt(key, 16000)
+                if (isHostSignaling) broadcastSettings()
+                if (isGroupVoice) restartMediaStreamerForGroupVoice(rate)
+            }
             "display_name" -> {
                 val newName = sharedPreferences.getString(key, Build.MODEL) ?: Build.MODEL
                 if (isHostSignaling) {
@@ -497,6 +537,43 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         }
     }
 
+    private fun restartMediaStreamerForGroupVoice(customRate: Int? = null) {
+        scope.launch {
+            mediaStreamerMutex.withLock {
+                val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
+                val rate = customRate ?: prefs.getInt("group_sample_rate", 16000)
+                Log.d("CallService", "Restarting MediaStreamer for Group Voice at sample rate: $rate")
+                try {
+                    mediaStreamer?.stop()
+                } catch (e: Exception) {
+                    Log.e("CallService", "Error stopping old mediaStreamer", e)
+                }
+                
+                mediaStreamer = MediaStreamer(this@CallService)
+                val useMono = !isMediaLobby || isGroupVoice
+                try {
+                    mediaStreamer?.startPlayback(isMono = useMono, sampleRate = rate)
+                } catch (e: Exception) {
+                    Log.e("CallService", "Error starting playback", e)
+                }
+                
+                try {
+                    mediaStreamer?.startMicrophoneCapture(sampleRate = rate) { audioData ->
+                        if (!_isMuted.value) {
+                            if (isHostSignaling) {
+                                outgoingAudioChannel.trySend(audioData)
+                            } else {
+                                signalingClient?.sendAudioData(audioData)
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("CallService", "Error starting microphone capture", e)
+                }
+            }
+        }
+    }
+
     private fun broadcastSettings() {
         if (!isHostSignaling) return
         val prefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
@@ -504,8 +581,10 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
             put("type", "SETTINGS")
             put("opusBitrate", prefs.getInt("opus_bitrate", 64000))
             put("opusDtx", prefs.getBoolean("opus_dtx", true))
+            put("dtxThreshold", prefs.getFloat("dtx_threshold", 50f).toDouble())
             put("nsEnabled", prefs.getBoolean("ns_enabled", true))
             put("aecEnabled", prefs.getBoolean("aec_enabled", true))
+            put("groupSampleRate", prefs.getInt("group_sample_rate", 16000))
         }
         scope.launch {
             signalingServer?.broadcastMessage(settingsMsg)
@@ -513,6 +592,8 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
     }
 
     fun startHostSignaling(port: Int = 8080) {
+        _isConnecting.value = false
+        _isReconnecting.value = false
         scope.launch {
             initDeferred.await()
             if (signalingServer != null) {
@@ -658,6 +739,29 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         val deviceName = prefs.getString("display_name", Build.MODEL) ?: Build.MODEL
         signalingClient = SignalingClient(hostIp, port)
         signalingClient?.connect(myPeerId, deviceName)
+
+        var hasConnectedOnce = false
+        scope.launch {
+            signalingClient?.connectionState?.collect { state ->
+                when (state) {
+                    com.tylerhats.proxitap.signaling.ConnectionState.CONNECTED -> {
+                        hasConnectedOnce = true
+                        _isConnecting.value = false
+                        _isReconnecting.value = false
+                    }
+                    com.tylerhats.proxitap.signaling.ConnectionState.CONNECTING,
+                    com.tylerhats.proxitap.signaling.ConnectionState.DISCONNECTED -> {
+                        if (hasConnectedOnce) {
+                            _isConnecting.value = false
+                            _isReconnecting.value = true
+                        } else {
+                            _isConnecting.value = true
+                            _isReconnecting.value = false
+                        }
+                    }
+                }
+            }
+        }
         
         val signalingCallback = object : WebRtcClient.SignalingCallback {
             override fun onOfferCreated(peerId: String, sdp: String) {}
@@ -728,32 +832,49 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
                     }
                     _rawParticipants.value = list
                 }
-                else if (type == "SETTINGS" && !isMediaLobby) {
+                else if (type == "SETTINGS") {
                     val bitrate = json.optInt("opusBitrate", 64000)
                     val dtx = json.optBoolean("opusDtx", true)
+                    val dtxThresh = json.optDouble("dtxThreshold", 50.0).toFloat()
                     val ns = json.optBoolean("nsEnabled", true)
                     val aec = json.optBoolean("aecEnabled", true)
-                    Log.d("CallService", "Received synced settings from Host: Bitrate=$bitrate DTX=$dtx")
+                    val groupSampleRate = json.optInt("groupSampleRate", 16000)
+                    Log.d("CallService", "Received synced settings from Host: Bitrate=$bitrate DTX=$dtx Threshold=$dtxThresh SampleRate=$groupSampleRate")
                     
-                    webRtcClient.opusBitrateBps = bitrate
-                    webRtcClient.opusDtxEnabled = dtx
-                    webRtcClient.isNoiseSuppressionEnabled = ns
-                    webRtcClient.isAcousticEchoCancellationEnabled = aec
-                    
-                    // The PeerConnection will use these updated parameters when modifying local tracks/sender
-                    webRtcClient.applyAudioSettingsToActiveConnections()
-                    webRtcClient.updateAudioConstraints(ns, aec)
-
-                    // Write to local prefs (so peer's SettingsScreen UI updates)
                     val localPrefs = getSharedPreferences("ProxiTapSettings", Context.MODE_PRIVATE)
+                    val oldSampleRate = localPrefs.getInt("group_sample_rate", 16000)
+                    val oldNs = localPrefs.getBoolean("ns_enabled", true)
+                    val oldAec = localPrefs.getBoolean("aec_enabled", true)
+                    
+                    val sampleRateChanged = oldSampleRate != groupSampleRate
+                    val nsChanged = oldNs != ns
+                    val aecChanged = oldAec != aec
+
                     localPrefs.unregisterOnSharedPreferenceChangeListener(this@CallService)
                     localPrefs.edit()
                         .putInt("opus_bitrate", bitrate)
                         .putBoolean("opus_dtx", dtx)
+                        .putFloat("dtx_threshold", dtxThresh)
                         .putBoolean("ns_enabled", ns)
                         .putBoolean("aec_enabled", aec)
+                        .putInt("group_sample_rate", groupSampleRate)
                         .apply()
                     localPrefs.registerOnSharedPreferenceChangeListener(this@CallService)
+
+                    if (!isMediaLobby) {
+                        webRtcClient.opusBitrateBps = bitrate
+                        webRtcClient.opusDtxEnabled = dtx
+                        webRtcClient.isNoiseSuppressionEnabled = ns
+                        webRtcClient.isAcousticEchoCancellationEnabled = aec
+                        
+                        // The PeerConnection will use these updated parameters when modifying local tracks/sender
+                        webRtcClient.applyAudioSettingsToActiveConnections()
+                        webRtcClient.updateAudioConstraints(ns, aec)
+                    } else if (isGroupVoice) {
+                        if (sampleRateChanged || nsChanged || aecChanged) {
+                            restartMediaStreamerForGroupVoice(groupSampleRate)
+                        }
+                    }
                 }
                 else if (type == "OFFER" && !isMediaLobby) {
                     val senderId = "HOST"
@@ -813,6 +934,9 @@ class CallService : Service(), SharedPreferences.OnSharedPreferenceChangeListene
         _participants.value = emptyList()
         _connectionStats.value = emptyMap()
         _hasJoined.value = false
+        _isConnecting.value = true
+        _isReconnecting.value = false
+        while (outgoingAudioChannel.tryReceive().isSuccess) { /* drain */ }
         callStartTime = 0L
         
         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager

@@ -8,6 +8,8 @@ import io.ktor.http.*
 import io.ktor.websocket.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.consumeEach
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,6 +39,11 @@ class SignalingClient(private val hostIp: String, private val port: Int = 8080) 
     private val _incomingAudio = MutableSharedFlow<ByteArray>(extraBufferCapacity = 64)
     val incomingAudio = _incomingAudio.asSharedFlow()
 
+    private val outgoingAudioChannel = Channel<ByteArray>(
+        capacity = 15,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
@@ -59,6 +66,20 @@ class SignalingClient(private val hostIp: String, private val port: Int = 8080) 
                         _connectionState.value = ConnectionState.CONNECTED
                         Log.d("SignalingClient", "Successfully connected to Host Signaling Server")
 
+                        // Clear any buffered stale frames before starting
+                        while (outgoingAudioChannel.tryReceive().isSuccess) { /* clear */ }
+
+                        val sendJob = launch {
+                            for (data in outgoingAudioChannel) {
+                                try {
+                                    send(Frame.Binary(true, data))
+                                } catch (e: Exception) {
+                                    Log.e("SignalingClient", "Error sending audio frame", e)
+                                    break
+                                }
+                            }
+                        }
+
                         // Send JOIN
                         val joinMsg = JSONObject().apply {
                             put("type", "JOIN")
@@ -67,23 +88,27 @@ class SignalingClient(private val hostIp: String, private val port: Int = 8080) 
                         }
                         send(Frame.Text(joinMsg.toString()))
 
-                        incoming.consumeEach { frame ->
-                            if (frame is Frame.Text) {
-                                val text = frame.readText()
-                                Log.d("SignalingClient", "Received message: $text")
-                                val json = JSONObject(text)
-                                if (json.optString("type") == "SESSION_CLOSED") {
-                                    Log.d("SignalingClient", "Host closed the session. Disconnecting intentionally.")
-                                    isIntentionallyDisconnected = true
+                        try {
+                            incoming.consumeEach { frame ->
+                                if (frame is Frame.Text) {
+                                    val text = frame.readText()
+                                    Log.d("SignalingClient", "Received message: $text")
+                                    val json = JSONObject(text)
+                                    if (json.optString("type") == "SESSION_CLOSED") {
+                                        Log.d("SignalingClient", "Host closed the session. Disconnecting intentionally.")
+                                        isIntentionallyDisconnected = true
+                                        _incomingMessages.tryEmit(json)
+                                        session?.close(CloseReason(CloseReason.Codes.NORMAL, "Host closed session"))
+                                        return@consumeEach
+                                    }
                                     _incomingMessages.tryEmit(json)
-                                    session?.close(CloseReason(CloseReason.Codes.NORMAL, "Host closed session"))
-                                    return@consumeEach
+                                } else if (frame is Frame.Binary) {
+                                    val bytes = frame.readBytes()
+                                    _incomingAudio.tryEmit(bytes)
                                 }
-                                _incomingMessages.tryEmit(json)
-                            } else if (frame is Frame.Binary) {
-                                val bytes = frame.readBytes()
-                                _incomingAudio.tryEmit(bytes)
                             }
+                        } finally {
+                            sendJob.cancel()
                         }
                     }
                 } catch (e: Exception) {
@@ -112,18 +137,17 @@ class SignalingClient(private val hostIp: String, private val port: Int = 8080) 
     }
     
     fun sendAudioData(data: ByteArray) {
-        connectionScope?.launch {
-            session?.send(Frame.Binary(true, data))
-        }
+        outgoingAudioChannel.trySend(data)
     }
 
     fun disconnect() {
         Log.d("SignalingClient", "Disconnecting client")
         isIntentionallyDisconnected = true
+        while (outgoingAudioChannel.tryReceive().isSuccess) { /* drain */ }
         connectionScope?.launch {
-            session?.close()
+            try { session?.close() } catch (e: Exception) {}
             session = null
-            client.close()
+            try { client.close() } catch (e: Exception) {}
             connectionScope?.cancel()
         }
     }
