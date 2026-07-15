@@ -9,7 +9,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.tylerhats.proxitap"
+        applicationId = "dev.hatsthings.proxitap"
         minSdk = 34
         targetSdk = 35
         versionCode = 1
