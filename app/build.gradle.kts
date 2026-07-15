@@ -12,8 +12,8 @@ android {
         applicationId = "dev.hatsthings.proxitap"
         minSdk = 34
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 3
+        versionName = "3.0.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

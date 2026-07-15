@@ -461,7 +461,7 @@ fun SettingsScreen(
                     onDismissRequest = { showVolumePttDialog = false },
                     title = { Text("Accessibility Permission Required") },
                     text = { 
-                        Text("To intercept the physical volume buttons while the screen is locked, ProxiTap requires an Accessibility Service.\n\nYou will be redirected to Android Settings. Please find 'ProxiTap' in the Accessibility menu and enable it.") 
+                        Text("ProxiTap uses the AccessibilityService API to detect and intercept physical volume button presses (Volume Up and Volume Down) to support the Push-to-Talk (PTT) feature, even when the screen is locked or the app is in the background.\n\nWe do not monitor, collect, store, or transmit any key press events or personal data. The button presses are processed locally on your device solely to toggle your microphone state during an active call.\n\nDo you want to enable this feature and open the Accessibility Settings?") 
                     },
                     confirmButton = {
                         TextButton(onClick = {
