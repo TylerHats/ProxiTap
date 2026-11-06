@@ -16,6 +16,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.tylerhats.proxitap.audio.AudioRoute
 import com.tylerhats.proxitap.audio.PeerQuality
 import com.tylerhats.proxitap.audio.RawParticipant
 
@@ -29,10 +30,12 @@ fun CallScreen(
     isMediaLobby: Boolean = false,
     isGroupVoice: Boolean = false,
     isBidirectional: Boolean = false,
+    audioRoute: AudioRoute = AudioRoute.EARPIECE,
     participants: List<String> = emptyList(),
     rawParticipants: List<RawParticipant> = emptyList(),
     peerQualities: Map<String, PeerQuality> = emptyMap(),
     stats: Map<String, String> = emptyMap(),
+    onAudioRouteToggle: () -> Unit = {},
     onMuteToggle: () -> Unit,
     onEndCallClick: () -> Unit,
     onSettingsClick: () -> Unit,
@@ -259,19 +262,16 @@ fun CallScreen(
                 .padding(bottom = 32.dp),
             horizontalArrangement = Arrangement.SpaceEvenly
         ) {
-            val context = LocalContext.current
-            val audioManager = context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
-            var isSpeakerOn by remember { mutableStateOf(audioManager.isSpeakerphoneOn) }
-
             FloatingActionButton(
-                onClick = { 
-                    isSpeakerOn = !isSpeakerOn
-                    audioManager.isSpeakerphoneOn = isSpeakerOn
-                },
+                onClick = onAudioRouteToggle,
                 modifier = Modifier.size(80.dp),
-                containerColor = if (isSpeakerOn) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+                containerColor = if (audioRoute != AudioRoute.EARPIECE) {
+                    MaterialTheme.colorScheme.primaryContainer
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant
+                }
             ) {
-                Text(if (isSpeakerOn) "Speaker" else "Earpiece")
+                Text(audioRoute.label)
             }
             if (!isMediaLobby) {
                 FloatingActionButton(

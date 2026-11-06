@@ -53,9 +53,6 @@ fun ProxiTapApp() {
     val navController = rememberNavController()
     var isHost by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     var hostQrPayload by remember { mutableStateOf<String?>(null) }
-    
-    val nanImpl = remember { com.tylerhats.proxitap.network.NanImpl(context) }
-    val hotspotImpl = remember { com.tylerhats.proxitap.network.HotspotImpl(context) }
 
     // Request required permissions on startup
     val permissionsToRequest = mutableListOf(
@@ -169,14 +166,15 @@ fun ProxiTapApp() {
                     navController.navigate("serverList")
                 }
             )
+        }
+        composable("serverList") {
             LaunchedEffect(callService) {
                 if (callService != null) {
-                    while(true) {
+                    while (true) {
                         discoveredLobbies.clear()
                         callService?.nanImpl?.discoverLobbies { name, isProtected, isMedia, isBidi, fullPayload ->
                             val existingIndex = discoveredLobbies.indexOfFirst { it.name == name }
                             if (existingIndex != -1) {
-                                // Replace the stale cache with the new properties
                                 discoveredLobbies[existingIndex] = DiscoveredLobby(name, isProtected, isMedia, isBidi, fullPayload)
                             } else {
                                 discoveredLobbies.add(DiscoveredLobby(name, isProtected, isMedia, isBidi, fullPayload))
@@ -186,11 +184,15 @@ fun ProxiTapApp() {
                     }
                 }
             }
-        }
-        composable("serverList") {
+            DisposableEffect(callService) {
+                onDispose {
+                    callService?.nanImpl?.stopDiscovery()
+                }
+            }
             ServerListScreen(
                 discoveredLobbies = discoveredLobbies,
                 onLobbyClick = { lobby, pinInput ->
+                    callService?.nanImpl?.stopDiscovery()
                     val encoded = java.net.URLEncoder.encode(lobby.payload, "UTF-8")
                     val safePin = if (pinInput.isBlank()) "NONE" else pinInput
                     val parts = lobby.payload.split("|")
@@ -198,7 +200,7 @@ fun ProxiTapApp() {
                     navController.navigate("call?mode=nan&service=$encoded&media=${lobby.isMedia}&bidi=${lobby.isBidi}&pin=$safePin&groupVoice=$groupVoiceEnabled")
                 },
                 onBackClick = {
-                    nanImpl.stop()
+                    callService?.nanImpl?.stopDiscovery()
                     navController.popBackStack()
                 }
             )
@@ -235,6 +237,14 @@ fun ProxiTapApp() {
                         hostNetworkReady = true
                     } catch (e: Exception) {
                         android.util.Log.e("MainActivity", "Failed to start hosting", e)
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            android.widget.Toast.makeText(
+                                context,
+                                "Unable to start lobby: ${e.message ?: "Network unavailable"}",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                            navController.popBackStack()
+                        }
                     }
                 }
             }
@@ -438,6 +448,7 @@ fun ProxiTapApp() {
 
             val isSpeaking by callService?.isSpeaking?.collectAsState() ?: remember { mutableStateOf(false) }
             val isMuted by callService?.isMuted?.collectAsState() ?: remember { mutableStateOf(false) }
+            val audioRoute by (callService?.audioRoute ?: kotlinx.coroutines.flow.MutableStateFlow(com.tylerhats.proxitap.audio.AudioRoute.EARPIECE)).collectAsState()
             val participants by (callService?.participants ?: kotlinx.coroutines.flow.MutableStateFlow(emptyList())).collectAsState()
             val stats by (callService?.connectionStats ?: kotlinx.coroutines.flow.MutableStateFlow(emptyMap())).collectAsState()
             val peerQualities by (callService?.peerQualities ?: kotlinx.coroutines.flow.MutableStateFlow(emptyMap())).collectAsState()
@@ -489,10 +500,12 @@ fun ProxiTapApp() {
                     isMediaLobby = isMediaLobby,
                     isGroupVoice = callService?.isGroupVoice ?: isGroupVoice,
                     isBidirectional = callService?.isBidirectional ?: isBidirectional,
+                    audioRoute = audioRoute,
                     participants = participants,
                     rawParticipants = rawParticipants,
                     peerQualities = peerQualities,
                     stats = stats,
+                    onAudioRouteToggle = { callService?.cycleAudioRoute() },
                     onMuteToggle = { callService?.toggleMute() },
                     onEndCallClick = { 
                         callService?.endCall()

@@ -1,7 +1,5 @@
 package com.tylerhats.proxitap.ui.screens
 
-import android.content.Intent
-import android.provider.Settings
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -29,8 +27,6 @@ fun SettingsScreen(
     var aecEnabled by remember { mutableStateOf(prefs.getBoolean("aec_enabled", true)) }
     var bluetoothMic by remember { mutableStateOf(prefs.getBoolean("bluetooth_mic", true)) }
     var hardwarePtt by remember { mutableStateOf(prefs.getBoolean("hardware_ptt", false)) }
-    var volumePtt by remember { mutableStateOf(prefs.getBoolean("volume_ptt", false)) }
-    var showVolumePttDialog by remember { mutableStateOf(false) }
     
     val bitrateOptions = remember { listOf(2000, 4000, 8000, 16000, 32000, 64000, 128000, 256000) }
     var currentBitrateIndex by remember {
@@ -77,7 +73,6 @@ fun SettingsScreen(
                 }
                 "max_participants" -> maxParticipants = prefs.getInt(key, 4)
                 "hardware_ptt" -> hardwarePtt = prefs.getBoolean(key, false)
-                "volume_ptt" -> volumePtt = prefs.getBoolean(key, false)
             }
         }
         prefs.registerOnSharedPreferenceChangeListener(listener)
@@ -182,8 +177,7 @@ fun SettingsScreen(
                         onCheckedChange = { 
                             bluetoothMic = it
                             prefs.edit().putBoolean("bluetooth_mic", it).apply()
-                        },
-                        enabled = isHost
+                        }
                     )
                 }
             }
@@ -422,62 +416,6 @@ fun SettingsScreen(
                     onCheckedChange = { 
                         hardwarePtt = it
                         prefs.edit().putBoolean("hardware_ptt", it).apply()
-                    },
-                    enabled = isHost
-                )
-            }
-            
-            Spacer(modifier = Modifier.height(16.dp))
-            
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Physical Volume Button PTT (Zello-style)")
-                    Text(
-                        text = "Requires Accessibility Permissions",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Switch(
-                    checked = volumePtt,
-                    onCheckedChange = { isChecked ->
-                        if (isChecked) {
-                            showVolumePttDialog = true
-                        } else {
-                            volumePtt = false
-                            prefs.edit().putBoolean("volume_ptt", false).apply()
-                        }
-                    },
-                    enabled = isHost
-                )
-            }
-            
-            if (showVolumePttDialog) {
-                AlertDialog(
-                    onDismissRequest = { showVolumePttDialog = false },
-                    title = { Text("Accessibility Permission Required") },
-                    text = { 
-                        Text("ProxiTap uses the AccessibilityService API to detect and intercept physical volume button presses (Volume Up and Volume Down) to support the Push-to-Talk (PTT) feature, even when the screen is locked or the app is in the background.\n\nWe do not monitor, collect, store, or transmit any key press events or personal data. The button presses are processed locally on your device solely to toggle your microphone state during an active call.\n\nDo you want to enable this feature and open the Accessibility Settings?") 
-                    },
-                    confirmButton = {
-                        TextButton(onClick = {
-                            showVolumePttDialog = false
-                            volumePtt = true
-                            prefs.edit().putBoolean("volume_ptt", true).apply()
-                            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                            context.startActivity(intent)
-                        }) {
-                            Text("Open Settings")
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { showVolumePttDialog = false }) {
-                            Text("Cancel")
-                        }
                     }
                 )
             }
