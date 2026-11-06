@@ -14,6 +14,9 @@
 .cxx
 local.properties
 
-# Exclude APKs
+# Exclude APKs, Bundles, and Debug Logs
 *.apk
+*.aab
+*.log
+*_logcat.txt
 app/build/
