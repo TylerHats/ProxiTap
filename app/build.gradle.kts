@@ -6,18 +6,21 @@ plugins {
 
 android {
     namespace = "com.tylerhats.proxitap"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "dev.hatsthings.proxitap"
         minSdk = 34
-        targetSdk = 35
-        versionCode = 4
+        targetSdk = 36
+        versionCode = 5
         versionName = "3.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
+        }
+        ndk {
+            debugSymbolLevel = "FULL"
         }
     }
 
@@ -33,7 +36,11 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            ndk {
+                debugSymbolLevel = "FULL"
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -50,6 +57,31 @@ android {
 
     buildFeatures {
         compose = true
+    }
+}
+
+// Ensure pre-stripped 3rd-party AAR native libraries (WebRTC, MLKit, CameraX) contain a symbol table
+// entry prior to AGP's strip/extract tasks so BUNDLE-METADATA/com.android.tools.build.debugsymbols
+// is always populated in the release App Bundle (.aab) for Google Play Console.
+tasks.matching { it.name == "mergeReleaseNativeLibs" }.configureEach {
+    doLast {
+        val sdkDir = android.sdkDirectory
+        val llvmObjcopy = sdkDir.resolve("ndk")
+            .walkTopDown()
+            .firstOrNull { it.name == "llvm-objcopy" && it.canExecute() }
+        if (llvmObjcopy != null) {
+            outputs.files.asFileTree.matching { include("**/*.so") }.forEach { soFile ->
+                exec {
+                    commandLine(
+                        llvmObjcopy.absolutePath,
+                        "--add-symbol",
+                        "proxi_debug_sym=.text:0",
+                        soFile.absolutePath
+                    )
+                    isIgnoreExitValue = true
+                }
+            }
+        }
     }
 }
 
